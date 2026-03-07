@@ -1,0 +1,155 @@
+:root{
+  --bg:#1f2124;
+  --panel:#26292d;
+  --panel2:#2d3035;
+  --line:#3a3f45;
+  --text:#e7e7e7;
+  --muted:#a7a7a7;
+  --accent:#ffcc66;
+}
+
+*{ box-sizing:border-box; }
+html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+#app{ height:100%; display:flex; flex-direction:column; }
+
+.menubar{
+  height:34px; display:flex; align-items:center; gap:14px;
+  padding:0 10px; background:var(--panel); border-bottom:1px solid var(--line);
+}
+.menu{ color:var(--muted); cursor:default; }
+.spacer{ flex:1; }
+.pill{
+  padding:6px 10px; border:1px solid var(--line); background:var(--panel2);
+  border-radius:6px; color:var(--text);
+}
+
+.menuWrap{
+  position:relative;
+  height:100%;
+  display:flex;
+  align-items:center;
+}
+
+.menuBtn{
+  height:28px;
+  padding:0 10px;
+  border:1px solid transparent;
+  border-radius:6px;
+  background:transparent;
+  color:var(--muted);
+  cursor:pointer;
+}
+
+.menuBtn:hover,
+.menuBtn.open{
+  color:var(--text);
+  background:var(--panel2);
+  border-color:var(--line);
+}
+
+.dropdown{
+  position:absolute;
+  top:32px;
+  left:0;
+  min-width:180px;
+  display:none;
+  flex-direction:column;
+  padding:6px;
+  background:var(--panel2);
+  border:1px solid var(--line);
+  border-radius:10px;
+  box-shadow:0 10px 30px rgba(0,0,0,.35);
+  z-index:1000;
+}
+
+.dropdown.open{
+  display:flex;
+}
+
+.menuItem{
+  padding:8px 10px;
+  text-align:left;
+  border:none;
+  border-radius:8px;
+  background:transparent;
+  color:var(--text);
+  cursor:pointer;
+}
+
+.menuItem:hover{
+  background:#3a3f45;
+}
+
+.menuDivider{
+  height:1px;
+  margin:6px 0;
+  background:rgba(255,255,255,0.08);
+}
+
+.toolbar{
+  height:42px; display:flex; align-items:center; gap:8px;
+  padding:0 10px; background:var(--panel2); border-bottom:1px solid var(--line);
+}
+.toolbtn{
+  padding:8px 10px; border:1px solid var(--line); background:#1c1e21; color:var(--text);
+  border-radius:8px; cursor:pointer;
+}
+.toolbtn.active{ border-color:var(--accent); box-shadow:0 0 0 1px rgba(255,204,102,.35) inset; }
+.status{ color:var(--muted); }
+
+.btn{
+  padding:8px 10px; border:1px solid var(--line); background:#1c1e21; color:var(--text);
+  border-radius:8px; cursor:pointer;
+}
+.btn.small{ padding:6px 8px; font-size:12px; }
+.btn:hover,.toolbtn:hover{ border-color:#565d66; }
+
+.content{
+  flex:1; display:grid; grid-template-columns:72px 1fr 280px;
+  min-height:0;
+}
+
+.leftPanel, .rightPanel{
+  background:var(--panel); border-right:1px solid var(--line);
+}
+.rightPanel{ border-right:none; border-left:1px solid var(--line); }
+
+.panelTitle{
+  padding:10px; border-bottom:1px solid var(--line); color:var(--muted);
+  text-transform:uppercase; letter-spacing:.08em; font-size:11px;
+}
+
+.toolcol{ display:flex; flex-direction:column; gap:8px; padding:10px; }
+.iconbtn{
+  height:40px; border-radius:10px;
+  border:1px solid var(--line); background:#1c1e21; color:var(--text);
+  cursor:pointer;
+}
+
+.center{ background:#111214; display:flex; min-height:0; }
+.stageWrap{ flex:1; padding:10px; display:flex; align-items:center; justify-content:center; min-height:0; }
+#stage{
+  width:min(980px, 100%); height:auto; aspect-ratio:16/9;
+  background:#202428; border:1px solid var(--line); border-radius:12px;
+}
+
+.tabs{ display:flex; border-bottom:1px solid var(--line); }
+.tab{ padding:10px; color:var(--muted); border-right:1px solid var(--line); }
+.tab.active{ color:var(--text); background:var(--panel2); }
+.panelBody{ padding:10px; }
+.groupTitle{ margin:10px 0 6px; color:var(--muted); font-size:12px; }
+.row{ display:flex; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+.label{ width:90px; color:var(--muted); }
+.value{ flex:1; text-align:right; }
+.hint{ margin-top:10px; color:var(--muted); font-size:12px; }
+
+.timeline{
+  height:220px; background:var(--panel); border-top:1px solid var(--line);
+  display:flex; flex-direction:column;
+}
+.timelineHeader{
+  height:36px; display:flex; align-items:center; gap:8px;
+  padding:0 10px; border-bottom:1px solid var(--line);
+}
+#timeline{ flex:1; width:100%; height:100%; background:#1a1c1f; }
+

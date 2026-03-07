@@ -1,0 +1,43 @@
+1. go mod init gowasm (replace with your module name)
+2. mkdir gowasm
+3. touch main.go
+4.
+// for quick and simple
+set +o histexpand
+echo -e "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tfmt.Println(\"Go Web Assembly\")\n}" > main.go
+
+// for function exporter
+set +o histexpand
+echo -e "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"syscall/js\" // import for expose to JS\n)\n\n\nfunc jsonWrapper() js.Func { // expose to JS\n\tjsonFunc := js.FuncOf(func(this js.Value, args []js.Value) any {\n\t\tif len(args) != 1 {\n\t\t\treturn \"Invalid no of arguments passed\"\n\t\t}\n\t\tinputJSON := args[0].String()\n\t\tfmt.Printf(\"input %s\\\\n\", inputJSON)\n\t\tpretty, err := prettyJson(inputJSON)\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"unable to convert to json %s\\\\n\", err)\n\t\t\treturn err.Error()\n\t\t}\n\t\treturn pretty\n\t})\n\treturn jsonFunc\n}\n\nfunc prettyJson(input string) (string, error) {\n\tvar raw any\n\tif err := json.Unmarshal([]byte(input), &raw); err != nil {\n\t\treturn \"\", err\n\t}\n\tpretty, err := json.MarshalIndent(raw, \"\", \"  \")\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn string(pretty), nil\n}\n\nfunc main() {\n\tfmt.Println(\"Go Web Assembly\")\n\tjs.Global().Set(\"formatJSON\", jsonWrapper()) // expose to JS\n\t// make it run continuously\n\t<-make(chan struct{})\n}" > main.go
+
+5. cd gowasm
+6. touch index.html
+set +o histexpand
+echo -e "<!doctype html>\n<html>\n\t<head>\n\t\t<meta charset=\"utf-8\"/>\n\t\t<script src=\"wasm_exec.js\"></script>\n\t\t<script>\n\t\t\tconst go = new Go();\n\t\t\tWebAssembly.instantiateStreaming(fetch(\"json.wasm\"), go.importObject).then((result) => {\n\t\t\t\tgo.run(result.instance);\n\t\t\t});\n\t\t</script>\n\t</head>\n\t<body></body>\n</html>" > index.html
+7. cd ..
+8. GOOS=js GOARCH=wasm go build -o  ./gowasm/json.wasm
+9. cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./gowasm/
+10.
+go install github.com/shurcooL/goexec@latest
+goexec 'http.ListenAndServe(":8080", http.FileServer(http.Dir("gowasm")))'
+
+////////////////////////////////////////////////
+// Here is a Code Snippet All in one //
+////////////////////////////////////////////////
+
+go mod init gowasm 
+mkdir gowasm
+touch main.go
+set +o histexpand
+echo -e "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"syscall/js\" // import for expose to JS\n)\n\n\nfunc jsonWrapper() js.Func { // expose to JS\n\tjsonFunc := js.FuncOf(func(this js.Value, args []js.Value) any {\n\t\tif len(args) != 1 {\n\t\t\treturn \"Invalid no of arguments passed\"\n\t\t}\n\t\tinputJSON := args[0].String()\n\t\tfmt.Printf(\"input %s\\\\n\", inputJSON)\n\t\tpretty, err := prettyJson(inputJSON)\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"unable to convert to json %s\\\\n\", err)\n\t\t\treturn err.Error()\n\t\t}\n\t\treturn pretty\n\t})\n\treturn jsonFunc\n}\n\nfunc prettyJson(input string) (string, error) {\n\tvar raw any\n\tif err := json.Unmarshal([]byte(input), &raw); err != nil {\n\t\treturn \"\", err\n\t}\n\tpretty, err := json.MarshalIndent(raw, \"\", \"  \")\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn string(pretty), nil\n}\n\nfunc main() {\n\tfmt.Println(\"Go Web Assembly\")\n\tjs.Global().Set(\"formatJSON\", jsonWrapper()) // expose to JS\n\t// make it run continuously\n\t<-make(chan struct{})\n}" > main.go
+cd gowasm
+touch index.html
+set +o histexpand
+echo -e "<!doctype html>\n<html>\n\t<head>\n\t\t<meta charset=\"utf-8\"/>\n\t\t<script src=\"wasm_exec.js\"></script>\n\t\t<script>\n\t\t\tconst go = new Go();\n\t\t\tWebAssembly.instantiateStreaming(fetch(\"json.wasm\"), go.importObject).then((result) => {\n\t\t\t\tgo.run(result.instance);\n\t\t\t});\n\t\t</script>\n\t</head>\n\t<body></body>\n</html>" > index.html
+cd ..
+GOOS=js GOARCH=wasm go build -o ./anim/main.wasm
+cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./gowasm/
+go install github.com/shurcooL/goexec@latest
+go get github.com/shurcooL/go-goon
+goexec 'http.ListenAndServe(":8080", http.FileServer(http.Dir("anim")))'
+

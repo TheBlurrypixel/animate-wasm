@@ -1,0 +1,5 @@
+animate-wasm/
+  index.html
+  style.css
+  wasm_exec.js
+  main.go

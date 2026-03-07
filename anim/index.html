@@ -1,0 +1,180 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animate-like Editor (Go WASM)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="menubar" id="menubar">
+      <div class="menuWrap">
+        <button id="btn-file" class="menuBtn" data-menu="file">File</button>
+        <div class="dropdown" data-dropdown="file">
+          <button id="btn-new" class="menuItem" data-action="file.new">New</button>
+          <button id="btn-open" class="menuItem" data-action="file.open">Open&hellip;</button>
+          <button id="btn-save" class="menuItem" data-action="file.save">Save</button>
+          <button id="btn-export" class="menuItem" data-action="file.export">Export</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-edit" class="menuBtn" data-menu="edit">Edit</button>
+        <div class="dropdown" data-dropdown="edit">
+          <button id="btn-undo" class="menuItem" data-action="edit.undo">Undo</button>
+          <button id="btn-redo" class="menuItem" data-action="edit.redo">Redo</button>
+          <button id="btn-cut" class="menuItem" data-action="edit.cut">Cut</button>
+          <button id="btn-copy" class="menuItem" data-action="edit.copy">Copy</button>
+          <button id="btn-paste" class="menuItem" data-action="edit.paste">Paste</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-view" class="menuBtn" data-menu="view">View</button>
+        <div class="dropdown" data-dropdown="view">
+          <button id="btn-zoom-in" class="menuItem" data-action="view.zoomIn">Zoom In</button>
+          <button id="btn-zoom-out" class="menuItem" data-action="view.zoomOut">Zoom Out</button>
+          <button id="btn-reset-zoom" class="menuItem" data-action="view.resetZoom">Reset Zoom</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-insert" class="menuBtn" data-menu="insert">Insert</button>
+        <div class="dropdown" data-dropdown="insert">
+          <button id="btn-new-layer" class="menuItem" data-action="insert.layer">New Layer</button>
+          <button id="btn-keyframe" class="menuItem" data-action="insert.keyframe">Keyframe</button>
+          <button id="btn-blank-keyframe" class="menuItem" data-action="insert.blankKeyframe">Blank Keyframe</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-modify" class="menuBtn" data-menu="modify">Modify</button>
+        <div class="dropdown" data-dropdown="modify">
+          <button id="btn-convert-to-symbol" class="menuItem" data-action="modify.convertToSymbol">Convert to Symbol</button>
+          <button id="btn-break-apart" class="menuItem" data-action="modify.breakApart">Break Apart</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-text" class="menuBtn" data-menu="text">Text</button>
+        <div class="dropdown" data-dropdown="text">
+          <button id="btn-bold" class="menuItem" data-action="text.bold">Bold</button>
+          <button id="btn-italic" class="menuItem" data-action="text.italic">Italic</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-commands" class="menuBtn" data-menu="commands">Commands</button>
+        <div class="dropdown" data-dropdown="commands">
+          <button id="btn-run-test-command" class="menuItem" data-action="commands.testAlert">Run Test Command</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-control" class="menuBtn" data-menu="control">Control</button>
+        <div class="dropdown" data-dropdown="control">
+          <button id="btn-play" class="menuItem" data-action="control.play">Play</button>
+          <button id="btn-stop" class="menuItem" data-action="control.stop">Stop</button>
+          <button id="btn-rewind" class="menuItem" data-action="control.rewind">Rewind</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-window" class="menuBtn" data-menu="window">Window</button>
+        <div class="dropdown" data-dropdown="window">
+          <button id="btn-properties" class="menuItem" data-action="window.properties">Properties</button>
+          <button id="btn-library" class="menuItem" data-action="window.library">Library</button>
+        </div>
+      </div>
+
+      <div class="menuWrap">
+        <button id="btn-help" class="menuBtn" data-menu="help">Help</button>
+        <div class="dropdown" data-dropdown="help">
+          <button id="btn-about" class="menuItem" data-action="help.about">About</button>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="pill">Scene 1</div>
+      <div class="pill">100%</div>
+      <button id="btn-publish" class="btn">Publish</button>
+    </div>
+    
+    <div class="toolbar">
+      <button id="btn-selection" class="toolbtn" data-tool="select">Selection</button>
+      <button id="btn-transform" class="toolbtn" data-tool="transform">Transform</button>
+      <button id="btn-text-2" class="toolbtn" data-tool="text">Text</button>
+      <button id="btn-shape" class="toolbtn" data-tool="shape">Shape</button>
+      <button id="btn-classic-tween" class="toolbtn" data-tool="tween">Classic Tween</button>
+      <button id="btn-action-script" class="toolbtn" data-tool="action">Action Script</button>
+      <div class="spacer"></div>
+      <div id="status" class="status">Loading WASM&hellip;</div>
+    </div>
+
+    <div class="content">
+      <div class="leftPanel">
+        <div class="panelTitle">Tools</div>
+        <div class="toolcol">
+          <button id="btn-arrow" class="iconbtn">&#x2196;</button>
+          <button id="btn-square" class="iconbtn">&#x2B1A;</button>
+          <button id="btn-pencil" class="iconbtn">&#x270E;</button>
+          <button id="btn-t" class="iconbtn">T</button>
+          <button id="btn-crosshair" class="iconbtn">&#x2316;</button>
+          <button id="btn-circle" class="iconbtn">&#x25EF;</button>
+          <button id="btn-line" class="iconbtn">&#x25AD;</button>
+        </div>
+      </div>
+
+      <div class="center">
+        <div class="stageWrap">
+          <canvas id="stage"></canvas>
+        </div>
+      </div>
+
+      <div class="rightPanel">
+        <div class="tabs">
+          <div class="tab active">Properties</div>
+          <div class="tab">Library</div>
+        </div>
+        <div class="panelBody">
+          <div class="groupTitle">Document</div>
+          <div class="row"><div class="label">Size</div><div id="docSize" class="value">&mdash;</div></div>
+          <div class="row"><div class="label">FPS</div><div id="docFps" class="value">24</div></div>
+
+          <div class="groupTitle">Object</div>
+          <div class="row"><div class="label">Selected</div><div id="selName" class="value">None</div></div>
+          <div class="row"><div class="label">Tool</div><div id="selTool" class="value">Selection</div></div>
+
+          <div class="groupTitle">Playback</div>
+          <div class="row"><div class="label">Frame</div><div id="curFrame" class="value">1</div></div>
+          <div class="row"><div class="label">Playing</div><div id="isPlaying" class="value">No</div></div>
+          <div class="hint">Tip: Drag the playhead in the timeline. Press Space to play/pause.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="timeline">
+      <div class="timelineHeader">
+        <div class="panelTitle">Timeline</div>
+        <div class="spacer"></div>
+        <button id="btn-layer" class="btn small">+ Layer</button>
+        <button id="btn-zoom" class="btn small">Zoom +</button>
+        <button id="btn-zoom-2" class="btn small">Zoom &minus;</button>
+      </div>
+      <canvas id="timeline"></canvas>
+    </div>
+  </div>
+
+  <script src="wasm_exec.js"></script>
+  <script>
+    const go = new Go();
+    WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject).then((result) => {
+      go.run(result.instance);
+    }).catch((err) => {
+      console.error(err);
+      document.getElementById("status").textContent = "WASM failed to load";
+    });
+  </script>
+</body>
+</html>
