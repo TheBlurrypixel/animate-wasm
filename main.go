@@ -3,23 +3,139 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"syscall/js"
 	"time"
 )
 
 type Layer struct {
-	Name   string
-	Frames []bool // keyframe markers (simple)
-	Color  string
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Color       string            `json:"color"`
+	Instances   []ElementInstance `json:"instances"`
+}
+
+type ElementInstance struct {
+	ID          string                   `json:"id"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description"`
+	Keyframes   map[int]InstanceKeyframe `json:"keyframes"` // frame -> animation data
+}
+
+type InstanceKeyframe struct {
+	Frame    int     `json:"frame"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	ScaleX   float64 `json:"scaleX"`
+	ScaleY   float64 `json:"scaleY"`
+	Rotation float64 `json:"rotation"`
+	Opacity  float64 `json:"opacity"`
+}
+
+type Document struct {
+	Name        string  `json:"name"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	FPS         int     `json:"fps"`
+	TotalFrames int     `json:"totalFrames"`
+	Layers      []Layer `json:"layers"`
+}
+
+func newDefaultDocument() Document {
+	doc := Document{
+		Name:        "scene-1",
+		Width:       640,
+		Height:      360,
+		FPS:         24,
+		TotalFrames: 120,
+		Layers: []Layer{
+			{
+				Name:        "Fox",
+				Description: "Main fox character layer",
+				Color:       "#ff6b6b",
+				Instances: []ElementInstance{{
+					ID:          "fox-instance-1",
+					Name:        "Fox Symbol",
+					Description: "Primary fox instance on stage",
+					Keyframes:   make(map[int]InstanceKeyframe),
+				}},
+			},
+			{
+				Name:        "Foreground",
+				Description: "Foreground decorative elements",
+				Color:       "#ffd166",
+				Instances: []ElementInstance{{
+					ID:          "foreground-instance-1",
+					Name:        "Foreground Group",
+					Description: "Foreground grouped elements",
+					Keyframes:   make(map[int]InstanceKeyframe),
+				}},
+			},
+			{
+				Name:        "Background",
+				Description: "Background elements",
+				Color:       "#4dabf7",
+				Instances: []ElementInstance{{
+					ID:          "background-instance-1",
+					Name:        "Background Group",
+					Description: "Background grouped elements",
+					Keyframes:   make(map[int]InstanceKeyframe),
+				}},
+			},
+		},
+	}
+
+	// mark a few keyframes
+	for _, f := range []int{1, 15, 30, 45, 60, 90, 120} {
+		doc.Layers[0].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
+	}
+	for _, f := range []int{1, 60, 120} {
+		doc.Layers[1].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
+		doc.Layers[2].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
+	}
+
+	return doc
+}
+
+func defaultKeyframeAt(frame int) InstanceKeyframe {
+	return InstanceKeyframe{
+		Frame:    frame,
+		X:        0,
+		Y:        0,
+		ScaleX:   1,
+		ScaleY:   1,
+		Rotation: 0,
+		Opacity:  1,
+	}
+}
+
+func (l *Layer) hasKeyframe(frame int) bool {
+	for _, inst := range l.Instances {
+		if _, ok := inst.Keyframes[frame]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) addKeyframe(layerIdx, instanceIdx, frame int) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return
+	}
+	if instanceIdx < 0 || instanceIdx >= len(a.doc.Layers[layerIdx].Instances) {
+		return
+	}
+	inst := &a.doc.Layers[layerIdx].Instances[instanceIdx]
+	inst.Keyframes[frame] = defaultKeyframeAt(frame)
 }
 
 type App struct {
 	activeMenu string
 
-	docW, docH int
-	fps        int
+	doc Document
 
 	stageCanvas js.Value
 	stageCtx    js.Value
@@ -34,12 +150,9 @@ type App struct {
 	isPlayEl   js.Value
 	selToolEl  js.Value
 
-	layers []Layer
-
 	// timeline state
-	totalFrames int
-	curFrame    int // 1-based
-	playing     bool
+	curFrame int // 1-based
+	playing  bool
 
 	zoom       float64 // pixels per frame
 	layerH     float64
@@ -51,23 +164,26 @@ type App struct {
 
 	// stage demo
 	foxX float64
+
+	heldCallbacks []js.Func
+}
+
+func (a *App) holdCallback(fn js.Func) js.Func {
+	a.heldCallbacks = append(a.heldCallbacks, fn)
+	return fn
 }
 
 func main() {
 	app := &App{
-		docW:        640,
-		docH:        360,
-		fps:         24,
-		totalFrames: 120,
-		curFrame:    1,
-		zoom:        10,  // px per frame
-		layerH:      28,  // px
-		headerW:     180, // px
-		foxX:        120, // demo actor x
+		doc:      newDefaultDocument(),
+		curFrame: 1,
+		zoom:     10,  // px per frame
+		layerH:   28,  // px
+		headerW:  180, // px
+		foxX:     120, // demo actor x
 	}
 
 	app.initDOM()
-	app.initLayers()
 	app.bindUI()
 	app.resizeCanvases()
 	app.renderAll()
@@ -103,24 +219,178 @@ func (a *App) initDOM() {
 	a.selToolEl = d.Call("getElementById", "selTool")
 
 	a.statusEl.Set("textContent", "WASM ready")
-	a.docSizeEl.Set("textContent", fmt.Sprintf("%d × %d px", a.docW, a.docH))
-	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.fps))
+	a.refreshDocUI()
 }
 
-func (a *App) initLayers() {
-	a.layers = []Layer{
-		{Name: "Fox", Color: "#ff6b6b", Frames: make([]bool, a.totalFrames+1)},
-		{Name: "Foreground", Color: "#ffd166", Frames: make([]bool, a.totalFrames+1)},
-		{Name: "Background", Color: "#4dabf7", Frames: make([]bool, a.totalFrames+1)},
+func (a *App) refreshDocUI() {
+	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
+	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
+}
+
+func sanitizeFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "document"
 	}
-	// mark a few keyframes
-	for _, f := range []int{1, 15, 30, 45, 60, 90, 120} {
-		a.layers[0].Frames[f] = true
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
 	}
-	for _, f := range []int{1, 60, 120} {
-		a.layers[1].Frames[f] = true
-		a.layers[2].Frames[f] = true
+	clean := strings.Trim(b.String(), "-.")
+	if clean == "" {
+		return "document"
 	}
+	return clean
+}
+
+func normalizeDocument(doc *Document) {
+	if doc.Name == "" {
+		doc.Name = "scene-1"
+	}
+	if doc.Width <= 0 {
+		doc.Width = 640
+	}
+	if doc.Height <= 0 {
+		doc.Height = 360
+	}
+	if doc.FPS <= 0 {
+		doc.FPS = 24
+	}
+	if doc.TotalFrames <= 0 {
+		doc.TotalFrames = 120
+	}
+
+	for li := range doc.Layers {
+		layer := &doc.Layers[li]
+		if layer.Color == "" {
+			layer.Color = "#c77dff"
+		}
+		if len(layer.Instances) == 0 {
+			layer.Instances = []ElementInstance{{
+				ID:          fmt.Sprintf("layer-%d-instance-1", li+1),
+				Name:        "Symbol Instance",
+				Description: "Default element instance",
+				Keyframes:   make(map[int]InstanceKeyframe),
+			}}
+		}
+		for ii := range layer.Instances {
+			inst := &layer.Instances[ii]
+			if inst.ID == "" {
+				inst.ID = fmt.Sprintf("layer-%d-instance-%d", li+1, ii+1)
+			}
+			if inst.Name == "" {
+				inst.Name = "Symbol Instance"
+			}
+			if inst.Keyframes == nil {
+				inst.Keyframes = make(map[int]InstanceKeyframe)
+			}
+
+			for frame, kf := range inst.Keyframes {
+				if frame < 1 || frame > doc.TotalFrames {
+					delete(inst.Keyframes, frame)
+					continue
+				}
+				if kf.Frame == 0 {
+					kf.Frame = frame
+				}
+				if kf.ScaleX == 0 {
+					kf.ScaleX = 1
+				}
+				if kf.ScaleY == 0 {
+					kf.ScaleY = 1
+				}
+				if kf.Opacity < 0 || kf.Opacity > 1 {
+					kf.Opacity = 1
+				}
+				inst.Keyframes[frame] = kf
+			}
+		}
+	}
+}
+
+func (a *App) loadDocumentJSONText(text string) error {
+	var doc Document
+	if err := json.Unmarshal([]byte(text), &doc); err != nil {
+		return err
+	}
+	normalizeDocument(&doc)
+	a.doc = doc
+	a.setFrame(a.curFrame)
+	a.refreshDocUI()
+	a.renderAll()
+	return nil
+}
+
+func (a *App) saveDocumentToDisk() error {
+	data, err := json.MarshalIndent(a.doc, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	u8 := js.Global().Get("Uint8Array").New(len(data))
+	js.CopyBytesToJS(u8, data)
+
+	blob := js.Global().Get("Blob").New([]any{u8}, map[string]any{
+		"type": "application/json",
+	})
+	url := js.Global().Get("URL").Call("createObjectURL", blob)
+
+	d := js.Global().Get("document")
+	aEl := d.Call("createElement", "a")
+	aEl.Set("href", url)
+	aEl.Set("download", sanitizeFileName(a.doc.Name)+".json")
+
+	d.Get("body").Call("appendChild", aEl)
+	aEl.Call("click")
+	d.Get("body").Call("removeChild", aEl)
+	js.Global().Get("URL").Call("revokeObjectURL", url)
+	return nil
+}
+
+func (a *App) openDocumentFromDisk() error {
+	d := js.Global().Get("document")
+	input := d.Call("createElement", "input")
+	input.Set("type", "file")
+	input.Set("accept", ".json,application/json")
+
+	changeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		files := input.Get("files")
+		if !files.Truthy() || files.Length() == 0 {
+			return nil
+		}
+
+		file := files.Index(0)
+		thenCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			text := args[0].String()
+			if err := a.loadDocumentJSONText(text); err != nil {
+				a.statusEl.Set("textContent", "Open failed: "+err.Error())
+				return nil
+			}
+			a.statusEl.Set("textContent", "Opened "+file.Get("name").String())
+			return nil
+		})
+		catchCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			msg := "Unknown error"
+			if len(args) > 0 {
+				msg = args[0].String()
+			}
+			a.statusEl.Set("textContent", "Open failed: "+msg)
+			return nil
+		})
+		a.holdCallback(thenCb)
+		a.holdCallback(catchCb)
+		file.Call("text").Call("then", thenCb).Call("catch", catchCb)
+		return nil
+	})
+
+	a.holdCallback(changeCb)
+	input.Call("addEventListener", "change", changeCb)
+	input.Call("click")
+	return nil
 }
 
 func (a *App) bindUI() {
@@ -144,7 +414,7 @@ func (a *App) bindUI() {
 	// publish button (demo)
 	d.Call("getElementById", "btn-publish").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
-			js.Global().Call("alert", "Pretend we exported a build 😄")
+			js.Global().Call("alert", "Pretend we exported a build :)")
 			return nil
 		}),
 	)
@@ -166,8 +436,18 @@ func (a *App) bindUI() {
 	// add layer
 	d.Call("getElementById", "btn-layer").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
-			n := len(a.layers) + 1
-			a.layers = append([]Layer{{Name: fmt.Sprintf("Layer %d", n), Color: "#c77dff", Frames: make([]bool, a.totalFrames+1)}}, a.layers...)
+			n := len(a.doc.Layers) + 1
+			a.doc.Layers = append([]Layer{{
+				Name:        fmt.Sprintf("Layer %d", n),
+				Description: fmt.Sprintf("User created layer %d", n),
+				Color:       "#c77dff",
+				Instances: []ElementInstance{{
+					ID:          fmt.Sprintf("layer-%d-instance-1", n),
+					Name:        "Symbol Instance",
+					Description: "Default element instance",
+					Keyframes:   make(map[int]InstanceKeyframe),
+				}},
+			}}, a.doc.Layers...)
 			return nil
 		}),
 	)
@@ -262,7 +542,7 @@ func (a *App) resizeCanvases() {
 	a.resizeCanvasToCSSPixels(a.tlCanvas)
 
 	// update props
-	a.docSizeEl.Set("textContent", fmt.Sprintf("%d × %d px", a.docW, a.docH))
+	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
 }
 
 func (a *App) resizeCanvasToCSSPixels(canvas js.Value) {
@@ -293,7 +573,7 @@ func (a *App) tick() {
 		return
 	}
 
-	advance := float64(dt) / float64(time.Second) * float64(a.fps)
+	advance := float64(dt) / float64(time.Second) * float64(a.doc.FPS)
 	if advance <= 0 {
 		return
 	}
@@ -303,7 +583,7 @@ func (a *App) tick() {
 	if next == a.curFrame {
 		next++
 	}
-	if next > a.totalFrames {
+	if next > a.doc.TotalFrames {
 		next = 1
 	}
 	a.curFrame = next
@@ -316,8 +596,8 @@ func (a *App) setFrame(f int) {
 	if f < 1 {
 		f = 1
 	}
-	if f > a.totalFrames {
-		f = a.totalFrames
+	if f > a.doc.TotalFrames {
+		f = a.doc.TotalFrames
 	}
 	a.curFrame = f
 }
@@ -331,8 +611,8 @@ func (a *App) xToFrame(x float64) int {
 	if f < 1 {
 		f = 1
 	}
-	if f > a.totalFrames {
-		f = a.totalFrames
+	if f > a.doc.TotalFrames {
+		f = a.doc.TotalFrames
 	}
 	return f
 }
@@ -400,7 +680,7 @@ func (a *App) renderTimeline() {
 
 	// frame grid
 	topPad := 10.0
-	for f := 1; f <= a.totalFrames; f++ {
+	for f := 1; f <= a.doc.TotalFrames; f++ {
 		x := a.frameToX(f)
 		if x < a.headerW || x > w {
 			continue
@@ -425,7 +705,7 @@ func (a *App) renderTimeline() {
 	}
 
 	// layers rows
-	for i, layer := range a.layers {
+	for i, layer := range a.doc.Layers {
 		y := topPad + float64(i)*a.layerH + 22
 		// row background
 		if i%2 == 0 {
@@ -441,8 +721,8 @@ func (a *App) renderTimeline() {
 		ctx.Call("fillText", layer.Name, 12, y)
 
 		// keyframes
-		for f := 1; f <= a.totalFrames; f++ {
-			if !layer.Frames[f] {
+		for f := 1; f <= a.doc.TotalFrames; f++ {
+			if !layer.hasKeyframe(f) {
 				continue
 			}
 			x := a.frameToX(f)
@@ -509,23 +789,6 @@ func (a *App) bindMenus() {
 	for i := 0; i < items.Length(); i++ {
 		item := items.Index(i)
 		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
-			event := args[0]
-			target := event.Get("target")
-			// Button label shown in HTML, e.g. <button>Save</button>
-			buttonName := target.Get("id").String()
-			fmt.Println(buttonName)
-
-			// switch buttonName {
-			// case "New":
-			// 	fmt.Println("New")
-			// case "Open…":
-			// 	fmt.Println("Open…")
-			// case "Save":
-			// 	fmt.Println("Save")
-			// case "Export":
-			// 	fmt.Println("Export")
-			// }
-
 			if len(args) > 0 {
 				args[0].Call("stopPropagation")
 			}
@@ -606,15 +869,25 @@ func (a *App) handleMenuAction(action string) {
 	switch action {
 
 	case "file.new":
+		a.doc = newDefaultDocument()
 		a.setFrame(1)
 		a.playing = false
+		a.refreshDocUI()
 		a.statusEl.Set("textContent", "New document")
 
 	case "file.open":
-		a.statusEl.Set("textContent", "Open requested")
+		if err := a.openDocumentFromDisk(); err != nil {
+			a.statusEl.Set("textContent", "Open failed: "+err.Error())
+			return
+		}
+		a.statusEl.Set("textContent", "Choose a .json document to open")
 
 	case "file.save":
-		a.statusEl.Set("textContent", "Save requested")
+		if err := a.saveDocumentToDisk(); err != nil {
+			a.statusEl.Set("textContent", "Save failed: "+err.Error())
+			return
+		}
+		a.statusEl.Set("textContent", "Document downloaded as JSON")
 
 	case "file.export":
 		a.statusEl.Set("textContent", "Export requested")
@@ -648,23 +921,29 @@ func (a *App) handleMenuAction(action string) {
 		a.statusEl.Set("textContent", "Zoom reset")
 
 	case "insert.layer":
-		n := len(a.layers) + 1
-		a.layers = append([]Layer{{
-			Name:   fmt.Sprintf("Layer %d", n),
-			Color:  "#c77dff",
-			Frames: make([]bool, a.totalFrames+1),
-		}}, a.layers...)
+		n := len(a.doc.Layers) + 1
+		a.doc.Layers = append([]Layer{{
+			Name:        fmt.Sprintf("Layer %d", n),
+			Description: fmt.Sprintf("User created layer %d", n),
+			Color:       "#c77dff",
+			Instances: []ElementInstance{{
+				ID:          fmt.Sprintf("layer-%d-instance-1", n),
+				Name:        "Symbol Instance",
+				Description: "Default element instance",
+				Keyframes:   make(map[int]InstanceKeyframe),
+			}},
+		}}, a.doc.Layers...)
 		a.statusEl.Set("textContent", "Layer added")
 
 	case "insert.keyframe":
-		if len(a.layers) > 0 {
-			a.layers[0].Frames[a.curFrame] = true
+		if len(a.doc.Layers) > 0 && len(a.doc.Layers[0].Instances) > 0 {
+			a.addKeyframe(0, 0, a.curFrame)
 		}
 		a.statusEl.Set("textContent", fmt.Sprintf("Keyframe added at %d", a.curFrame))
 
 	case "insert.blankKeyframe":
-		if len(a.layers) > 0 {
-			a.layers[0].Frames[a.curFrame] = true
+		if len(a.doc.Layers) > 0 && len(a.doc.Layers[0].Instances) > 0 {
+			a.addKeyframe(0, 0, a.curFrame)
 		}
 		a.statusEl.Set("textContent", fmt.Sprintf("Blank keyframe hook at %d", a.curFrame))
 
