@@ -125,6 +125,10 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   border:1px solid var(--line); background:#1c1e21; color:var(--text);
   cursor:pointer;
 }
+.iconbtn.active{
+  border-color:var(--accent);
+  box-shadow:0 0 0 1px rgba(255,204,102,.35) inset;
+}
 
 .center{ background:#111214; display:flex; min-height:0; }
 .stageWrap{ flex:1; padding:10px; display:flex; align-items:center; justify-content:center; min-height:0; }

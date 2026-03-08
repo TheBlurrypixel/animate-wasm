@@ -35,13 +35,25 @@ type InstanceKeyframe struct {
 	Opacity  float64 `json:"opacity"`
 }
 
+type VectorCircle struct {
+	ID        string  `json:"id"`
+	CX        float64 `json:"cx"`
+	CY        float64 `json:"cy"`
+	Radius    float64 `json:"radius"`
+	Fill      string  `json:"fill"`
+	Stroke    string  `json:"stroke"`
+	StrokeW   float64 `json:"strokeW"`
+	LayerName string  `json:"layerName,omitempty"`
+}
+
 type Document struct {
-	Name        string  `json:"name"`
-	Width       int     `json:"width"`
-	Height      int     `json:"height"`
-	FPS         int     `json:"fps"`
-	TotalFrames int     `json:"totalFrames"`
-	Layers      []Layer `json:"layers"`
+	Name        string         `json:"name"`
+	Width       int            `json:"width"`
+	Height      int            `json:"height"`
+	FPS         int            `json:"fps"`
+	TotalFrames int            `json:"totalFrames"`
+	Layers      []Layer        `json:"layers"`
+	Circles     []VectorCircle `json:"circles"`
 }
 
 func newDefaultDocument() Document {
@@ -86,6 +98,7 @@ func newDefaultDocument() Document {
 				}},
 			},
 		},
+		Circles: []VectorCircle{},
 	}
 
 	// mark a few keyframes
@@ -134,6 +147,7 @@ func (a *App) addKeyframe(layerIdx, instanceIdx, frame int) {
 
 type App struct {
 	activeMenu string
+	activeTool string
 
 	doc Document
 
@@ -165,6 +179,12 @@ type App struct {
 	// stage demo
 	foxX float64
 
+	drawingCircle bool
+	circleStartX  float64
+	circleStartY  float64
+	circleNowX    float64
+	circleNowY    float64
+
 	heldCallbacks []js.Func
 }
 
@@ -175,12 +195,13 @@ func (a *App) holdCallback(fn js.Func) js.Func {
 
 func main() {
 	app := &App{
-		doc:      newDefaultDocument(),
-		curFrame: 1,
-		zoom:     10,  // px per frame
-		layerH:   28,  // px
-		headerW:  180, // px
-		foxX:     120, // demo actor x
+		doc:        newDefaultDocument(),
+		activeTool: "select",
+		curFrame:   1,
+		zoom:       10,  // px per frame
+		layerH:     28,  // px
+		headerW:    180, // px
+		foxX:       120, // demo actor x
 	}
 
 	app.initDOM()
@@ -310,6 +331,29 @@ func normalizeDocument(doc *Document) {
 			}
 		}
 	}
+
+	for ci := range doc.Circles {
+		c := &doc.Circles[ci]
+		if c.ID == "" {
+			c.ID = fmt.Sprintf("circle-%d", ci+1)
+		}
+		if c.Radius < 0 {
+			c.Radius = -c.Radius
+		}
+		if c.Fill == "" {
+			c.Fill = "rgba(255, 204, 102, 0.35)"
+		}
+		if c.Stroke == "" {
+			c.Stroke = "#ffcc66"
+		}
+		if c.StrokeW <= 0 {
+			c.StrokeW = 2
+		}
+	}
+}
+
+func (a *App) nextCircleID() string {
+	return fmt.Sprintf("circle-%d", len(a.doc.Circles)+1)
 }
 
 func (a *App) loadDocumentJSONText(text string) error {
@@ -410,6 +454,19 @@ func (a *App) bindUI() {
 		})
 		b.Call("addEventListener", "click", cb)
 	}
+	// left toolbar icon tools
+	iconTools := d.Call("querySelectorAll", ".iconbtn")
+	for i := 0; i < iconTools.Length(); i++ {
+		b := iconTools.Index(i)
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			tool := this.Get("dataset").Get("tool").String()
+			if tool != "" {
+				a.setActiveTool(tool)
+			}
+			return nil
+		})
+		b.Call("addEventListener", "click", cb)
+	}
 
 	// publish button (demo)
 	d.Call("getElementById", "btn-publish").Call("addEventListener", "click",
@@ -506,15 +563,77 @@ func (a *App) bindUI() {
 	}))
 	w.Call("addEventListener", "mouseup", js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.draggingPH = false
+		if a.drawingCircle {
+			a.drawingCircle = false
+		}
 		return nil
 	}))
+
+	// stage drawing interactions
+	a.stageCanvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if a.activeTool != "circle" {
+			return nil
+		}
+		e := args[0]
+		a.circleStartX = e.Get("offsetX").Float()
+		a.circleStartY = e.Get("offsetY").Float()
+		a.circleNowX = a.circleStartX
+		a.circleNowY = a.circleStartY
+		a.drawingCircle = true
+		return nil
+	}))
+	a.stageCanvas.Call("addEventListener", "mousemove", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if !a.drawingCircle {
+			return nil
+		}
+		e := args[0]
+		a.circleNowX = e.Get("offsetX").Float()
+		a.circleNowY = e.Get("offsetY").Float()
+		return nil
+	}))
+	a.stageCanvas.Call("addEventListener", "mouseup", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if !a.drawingCircle {
+			return nil
+		}
+		e := args[0]
+		a.circleNowX = e.Get("offsetX").Float()
+		a.circleNowY = e.Get("offsetY").Float()
+		r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
+		if r >= 2 {
+			a.doc.Circles = append(a.doc.Circles, VectorCircle{
+				ID:      a.nextCircleID(),
+				CX:      a.circleStartX,
+				CY:      a.circleStartY,
+				Radius:  r,
+				Fill:    "rgba(255, 204, 102, 0.35)",
+				Stroke:  "#ffcc66",
+				StrokeW: 2,
+			})
+			a.statusEl.Set("textContent", "Circle created")
+		}
+		a.drawingCircle = false
+		return nil
+	}))
+
+	a.setActiveTool(a.activeTool)
 }
 
 func (a *App) setActiveTool(tool string) {
 	d := js.Global().Get("document")
+	a.activeTool = tool
+
 	btns := d.Call("querySelectorAll", ".toolbtn")
 	for i := 0; i < btns.Length(); i++ {
 		b := btns.Index(i)
+		if b.Get("dataset").Get("tool").String() == tool {
+			b.Get("classList").Call("add", "active")
+		} else {
+			b.Get("classList").Call("remove", "active")
+		}
+	}
+	iconBtns := d.Call("querySelectorAll", ".iconbtn")
+	for i := 0; i < iconBtns.Length(); i++ {
+		b := iconBtns.Index(i)
 		if b.Get("dataset").Get("tool").String() == tool {
 			b.Get("classList").Call("add", "active")
 		} else {
@@ -527,6 +646,9 @@ func (a *App) setActiveTool(tool string) {
 		"transform": "Transform",
 		"text":      "Text",
 		"shape":     "Shape",
+		"pencil":    "Pencil",
+		"circle":    "Circle",
+		"line":      "Line",
 		"tween":     "Classic Tween",
 		"action":    "Action Script",
 	}[tool]
@@ -534,6 +656,11 @@ func (a *App) setActiveTool(tool string) {
 		name = tool
 	}
 	a.selToolEl.Set("textContent", name)
+	if tool == "circle" {
+		a.stageCanvas.Get("style").Set("cursor", "crosshair")
+	} else {
+		a.stageCanvas.Get("style").Set("cursor", "default")
+	}
 }
 
 func (a *App) resizeCanvases() {
@@ -653,6 +780,30 @@ func (a *App) renderStage() {
 	ctx.Call("fillRect", x+6, y-18, 4, 4) // eye
 	ctx.Set("fillStyle", "#fff")
 	ctx.Call("fillRect", x+14, y-10, 10, 6) // snout highlight
+
+	// vector circles on stage
+	for _, c := range a.doc.Circles {
+		ctx.Set("fillStyle", c.Fill)
+		ctx.Call("beginPath")
+		ctx.Call("arc", c.CX, c.CY, c.Radius, 0, math.Pi*2)
+		ctx.Call("fill")
+
+		ctx.Set("lineWidth", c.StrokeW)
+		ctx.Set("strokeStyle", c.Stroke)
+		ctx.Call("stroke")
+	}
+
+	// in-progress circle preview
+	if a.drawingCircle {
+		r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
+		ctx.Set("fillStyle", "rgba(255, 255, 255, 0.18)")
+		ctx.Call("beginPath")
+		ctx.Call("arc", a.circleStartX, a.circleStartY, r, 0, math.Pi*2)
+		ctx.Call("fill")
+		ctx.Set("lineWidth", 1.5)
+		ctx.Set("strokeStyle", "rgba(255, 255, 255, 0.9)")
+		ctx.Call("stroke")
+	}
 
 	// stage border vibe
 	ctx.Set("strokeStyle", "rgba(0,0,0,0.25)")
