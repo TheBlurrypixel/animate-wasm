@@ -120,7 +120,7 @@
           <button id="btn-square" class="iconbtn" data-tool="shape">&#x2B1A;</button>
           <button id="btn-pencil" class="iconbtn" data-tool="pencil">&#x270E;</button>
           <button id="btn-t" class="iconbtn" data-tool="text">T</button>
-          <button id="btn-crosshair" class="iconbtn" data-tool="transform">&#x2316;</button>
+          <button id="btn-crosshair" class="iconbtn" data-tool="subselect">&#x2316;</button>
           <button id="btn-circle" class="iconbtn" data-tool="circle">&#x25EF;</button>
           <button id="btn-line" class="iconbtn" data-tool="line">&#x25AD;</button>
         </div>
@@ -145,6 +145,18 @@
           <div class="groupTitle">Object</div>
           <div class="row"><div class="label">Selected</div><div id="selName" class="value">None</div></div>
           <div class="row"><div class="label">Tool</div><div id="selTool" class="value">Selection</div></div>
+          <div class="row"><div class="label">Pos X</div><div class="value"><input id="propPosX" class="propInput" type="number" step="1" /></div></div>
+          <div class="row"><div class="label">Pos Y</div><div class="value"><input id="propPosY" class="propInput" type="number" step="1" /></div></div>
+          <div class="row"><div class="label">Scale X</div><div class="value"><input id="propScaleX" class="propInput" type="number" step="0.01" /></div></div>
+          <div class="row"><div class="label">Scale Y</div><div class="value"><input id="propScaleY" class="propInput" type="number" step="0.01" /></div></div>
+          <div class="row"><div class="label">Skew X</div><div class="value"><input id="propSkewX" class="propInput" type="number" step="0.01" /></div></div>
+          <div class="row"><div class="label">Skew Y</div><div class="value"><input id="propSkewY" class="propInput" type="number" step="0.01" /></div></div>
+          <div class="row"><div class="label">Rotation</div><div class="value propInline"><button id="propRotDec" class="propBtn" type="button">-</button><input id="propRot" class="propInput" type="number" step="0.01" /><button id="propRotInc" class="propBtn" type="button">+</button></div></div>
+          <div class="row"><div class="label">Anchor X</div><div class="value"><input id="propAncX" class="propInput" type="number" step="1" /></div></div>
+          <div class="row"><div class="label">Anchor Y</div><div class="value"><input id="propAncY" class="propInput" type="number" step="1" /></div></div>
+          <div class="row"><div class="label">Fill</div><div class="value"><input id="propFill" class="propInput" type="color" value="#66e3ff" /></div></div>
+          <div class="row"><div class="label">Stroke</div><div class="value"><input id="propStroke" class="propInput" type="color" value="#66e3ff" /></div></div>
+          <div class="row"><div class="label">Stroke W</div><div class="value"><input id="propStrokeW" class="propInput" type="number" min="0" step="0.1" /></div></div>
 
           <div class="groupTitle">Playback</div>
           <div class="row"><div class="label">Frame</div><div id="curFrame" class="value">1</div></div>

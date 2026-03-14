@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"syscall/js"
 	"time"
@@ -15,6 +16,7 @@ type Layer struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Color       string            `json:"color"`
+	Selected    bool              `json:"selected"`
 	Instances   []ElementInstance `json:"instances"`
 }
 
@@ -22,6 +24,8 @@ type ElementInstance struct {
 	ID          string                   `json:"id"`
 	Name        string                   `json:"name"`
 	Description string                   `json:"description"`
+	ElementType string                   `json:"elementType,omitempty"`
+	ElementID   string                   `json:"elementId,omitempty"`
 	Keyframes   map[int]InstanceKeyframe `json:"keyframes"` // frame -> animation data
 }
 
@@ -31,8 +35,21 @@ type InstanceKeyframe struct {
 	Y        float64 `json:"y"`
 	ScaleX   float64 `json:"scaleX"`
 	ScaleY   float64 `json:"scaleY"`
+	SkewX    float64 `json:"skewX"`
+	SkewY    float64 `json:"skewY"`
 	Rotation float64 `json:"rotation"`
+	AnchorX  float64 `json:"anchorX"`
+	AnchorY  float64 `json:"anchorY"`
 	Opacity  float64 `json:"opacity"`
+}
+
+type BezierPoint struct {
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	InX  float64 `json:"inX"`
+	InY  float64 `json:"inY"`
+	OutX float64 `json:"outX"`
+	OutY float64 `json:"outY"`
 }
 
 type VectorCircle struct {
@@ -46,6 +63,15 @@ type VectorCircle struct {
 	LayerName string  `json:"layerName,omitempty"`
 }
 
+type VectorPath struct {
+	ID      string        `json:"id"`
+	Points  []BezierPoint `json:"points"`
+	Stroke  string        `json:"stroke"`
+	Fill    string        `json:"fill"`
+	StrokeW float64       `json:"strokeW"`
+	Closed  bool          `json:"closed"`
+}
+
 type Document struct {
 	Name        string         `json:"name"`
 	Width       int            `json:"width"`
@@ -54,6 +80,7 @@ type Document struct {
 	TotalFrames int            `json:"totalFrames"`
 	Layers      []Layer        `json:"layers"`
 	Circles     []VectorCircle `json:"circles"`
+	Paths       []VectorPath   `json:"paths"`
 }
 
 func newDefaultDocument() Document {
@@ -68,6 +95,7 @@ func newDefaultDocument() Document {
 				Name:        "Fox",
 				Description: "Main fox character layer",
 				Color:       "#ff6b6b",
+				Selected:    true,
 				Instances: []ElementInstance{{
 					ID:          "fox-instance-1",
 					Name:        "Fox Symbol",
@@ -79,6 +107,7 @@ func newDefaultDocument() Document {
 				Name:        "Foreground",
 				Description: "Foreground decorative elements",
 				Color:       "#ffd166",
+				Selected:    false,
 				Instances: []ElementInstance{{
 					ID:          "foreground-instance-1",
 					Name:        "Foreground Group",
@@ -90,6 +119,7 @@ func newDefaultDocument() Document {
 				Name:        "Background",
 				Description: "Background elements",
 				Color:       "#4dabf7",
+				Selected:    false,
 				Instances: []ElementInstance{{
 					ID:          "background-instance-1",
 					Name:        "Background Group",
@@ -99,6 +129,7 @@ func newDefaultDocument() Document {
 			},
 		},
 		Circles: []VectorCircle{},
+		Paths:   []VectorPath{},
 	}
 
 	// mark a few keyframes
@@ -120,7 +151,11 @@ func defaultKeyframeAt(frame int) InstanceKeyframe {
 		Y:        0,
 		ScaleX:   1,
 		ScaleY:   1,
+		SkewX:    0,
+		SkewY:    0,
 		Rotation: 0,
+		AnchorX:  0,
+		AnchorY:  0,
 		Opacity:  1,
 	}
 }
@@ -145,6 +180,65 @@ func (a *App) addKeyframe(layerIdx, instanceIdx, frame int) {
 	inst.Keyframes[frame] = defaultKeyframeAt(frame)
 }
 
+type mat2d struct {
+	a, b, c, d, e, f float64
+}
+
+func matIdentity() mat2d { return mat2d{a: 1, d: 1} }
+
+func matMul(m1, m2 mat2d) mat2d {
+	return mat2d{
+		a: m1.a*m2.a + m1.c*m2.b,
+		b: m1.b*m2.a + m1.d*m2.b,
+		c: m1.a*m2.c + m1.c*m2.d,
+		d: m1.b*m2.c + m1.d*m2.d,
+		e: m1.a*m2.e + m1.c*m2.f + m1.e,
+		f: m1.b*m2.e + m1.d*m2.f + m1.f,
+	}
+}
+
+func matTranslate(x, y float64) mat2d { return mat2d{a: 1, d: 1, e: x, f: y} }
+func matScale(x, y float64) mat2d     { return mat2d{a: x, d: y} }
+func matRotate(rad float64) mat2d {
+	c := math.Cos(rad)
+	s := math.Sin(rad)
+	return mat2d{a: c, b: s, c: -s, d: c}
+}
+func matSkew(sx, sy float64) mat2d {
+	return mat2d{a: 1, b: math.Tan(sy), c: math.Tan(sx), d: 1}
+}
+
+func matApply(m mat2d, x, y float64) (float64, float64) {
+	return m.a*x + m.c*y + m.e, m.b*x + m.d*y + m.f
+}
+
+func matInvert(m mat2d) (mat2d, bool) {
+	det := m.a*m.d - m.b*m.c
+	if math.Abs(det) < 1e-9 {
+		return mat2d{}, false
+	}
+	id := 1.0 / det
+	return mat2d{
+		a: m.d * id,
+		b: -m.b * id,
+		c: -m.c * id,
+		d: m.a * id,
+		e: (m.c*m.f - m.d*m.e) * id,
+		f: (m.b*m.e - m.a*m.f) * id,
+	}, true
+}
+
+func instanceMatrix(kf InstanceKeyframe) mat2d {
+	m := matIdentity()
+	m = matMul(m, matTranslate(kf.X, kf.Y))
+	m = matMul(m, matTranslate(kf.AnchorX, kf.AnchorY))
+	m = matMul(m, matRotate(kf.Rotation))
+	m = matMul(m, matSkew(kf.SkewX, kf.SkewY))
+	m = matMul(m, matScale(kf.ScaleX, kf.ScaleY))
+	m = matMul(m, matTranslate(-kf.AnchorX, -kf.AnchorY))
+	return m
+}
+
 type App struct {
 	activeMenu string
 	activeTool string
@@ -157,12 +251,27 @@ type App struct {
 	tlCanvas js.Value
 	tlCtx    js.Value
 
-	statusEl   js.Value
-	docSizeEl  js.Value
-	docFpsEl   js.Value
-	curFrameEl js.Value
-	isPlayEl   js.Value
-	selToolEl  js.Value
+	statusEl    js.Value
+	docSizeEl   js.Value
+	docFpsEl    js.Value
+	curFrameEl  js.Value
+	isPlayEl    js.Value
+	selNameEl   js.Value
+	selToolEl   js.Value
+	propPosX    js.Value
+	propPosY    js.Value
+	propScaleX  js.Value
+	propScaleY  js.Value
+	propSkewX   js.Value
+	propSkewY   js.Value
+	propRot     js.Value
+	propRotDec  js.Value
+	propRotInc  js.Value
+	propAncX    js.Value
+	propAncY    js.Value
+	propFill    js.Value
+	propStroke  js.Value
+	propStrokeW js.Value
 
 	// timeline state
 	curFrame int // 1-based
@@ -185,6 +294,29 @@ type App struct {
 	circleNowX    float64
 	circleNowY    float64
 
+	penEditing   bool
+	penPoints    []BezierPoint
+	penMouseDown bool
+	penDragIndex int
+	penDragMoved bool
+	penMouseX    float64
+	penMouseY    float64
+
+	selectedLayerIdx  int
+	selectedInstIdx   int
+	selectedInstances map[string]bool
+	selectedPathPt    int
+	selectedHandle    string
+	dragMode          string
+	lastMouseX        float64
+	lastMouseY        float64
+	marqueeActive     bool
+	marqueeStartX     float64
+	marqueeStartY     float64
+	marqueeNowX       float64
+	marqueeNowY       float64
+	marqueeAdditive   bool
+
 	heldCallbacks []js.Func
 }
 
@@ -195,13 +327,17 @@ func (a *App) holdCallback(fn js.Func) js.Func {
 
 func main() {
 	app := &App{
-		doc:        newDefaultDocument(),
-		activeTool: "select",
-		curFrame:   1,
-		zoom:       10,  // px per frame
-		layerH:     28,  // px
-		headerW:    180, // px
-		foxX:       120, // demo actor x
+		doc:               newDefaultDocument(),
+		activeTool:        "select",
+		curFrame:          1,
+		zoom:              10,  // px per frame
+		layerH:            28,  // px
+		headerW:           180, // px
+		foxX:              120, // demo actor x
+		selectedLayerIdx:  -1,
+		selectedInstIdx:   -1,
+		selectedInstances: make(map[string]bool),
+		selectedPathPt:    -1,
 	}
 
 	app.initDOM()
@@ -237,7 +373,22 @@ func (a *App) initDOM() {
 	a.docFpsEl = d.Call("getElementById", "docFps")
 	a.curFrameEl = d.Call("getElementById", "curFrame")
 	a.isPlayEl = d.Call("getElementById", "isPlaying")
+	a.selNameEl = d.Call("getElementById", "selName")
 	a.selToolEl = d.Call("getElementById", "selTool")
+	a.propPosX = d.Call("getElementById", "propPosX")
+	a.propPosY = d.Call("getElementById", "propPosY")
+	a.propScaleX = d.Call("getElementById", "propScaleX")
+	a.propScaleY = d.Call("getElementById", "propScaleY")
+	a.propSkewX = d.Call("getElementById", "propSkewX")
+	a.propSkewY = d.Call("getElementById", "propSkewY")
+	a.propRot = d.Call("getElementById", "propRot")
+	a.propRotDec = d.Call("getElementById", "propRotDec")
+	a.propRotInc = d.Call("getElementById", "propRotInc")
+	a.propAncX = d.Call("getElementById", "propAncX")
+	a.propAncY = d.Call("getElementById", "propAncY")
+	a.propFill = d.Call("getElementById", "propFill")
+	a.propStroke = d.Call("getElementById", "propStroke")
+	a.propStrokeW = d.Call("getElementById", "propStrokeW")
 
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
@@ -246,6 +397,7 @@ func (a *App) initDOM() {
 func (a *App) refreshDocUI() {
 	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
 	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
+	a.updateSelectedLayerLabel()
 }
 
 func sanitizeFileName(name string) string {
@@ -331,6 +483,16 @@ func normalizeDocument(doc *Document) {
 			}
 		}
 	}
+	anySelected := false
+	for _, l := range doc.Layers {
+		if l.Selected {
+			anySelected = true
+			break
+		}
+	}
+	if !anySelected && len(doc.Layers) > 0 {
+		doc.Layers[0].Selected = true
+	}
 
 	for ci := range doc.Circles {
 		c := &doc.Circles[ci]
@@ -350,10 +512,737 @@ func normalizeDocument(doc *Document) {
 			c.StrokeW = 2
 		}
 	}
+
+	for pi := range doc.Paths {
+		p := &doc.Paths[pi]
+		if p.ID == "" {
+			p.ID = fmt.Sprintf("path-%d", pi+1)
+		}
+		if p.Stroke == "" {
+			p.Stroke = "#66e3ff"
+		}
+		if p.StrokeW <= 0 {
+			p.StrokeW = 2
+		}
+		if p.Closed {
+			if p.Fill == "" {
+				p.Fill = "rgba(102, 227, 255, 0.25)"
+			}
+		} else if p.Fill == "" {
+			p.Fill = "transparent"
+		}
+		for i := range p.Points {
+			pt := &p.Points[i]
+			// Backward-compatible default: if handles are missing, use corner point.
+			if pt.InX == 0 && pt.InY == 0 && pt.OutX == 0 && pt.OutY == 0 {
+				pt.InX = pt.X
+				pt.InY = pt.Y
+				pt.OutX = pt.X
+				pt.OutY = pt.Y
+			}
+		}
+	}
 }
 
 func (a *App) nextCircleID() string {
 	return fmt.Sprintf("circle-%d", len(a.doc.Circles)+1)
+}
+
+func (a *App) nextPathID() string {
+	return fmt.Sprintf("path-%d", len(a.doc.Paths)+1)
+}
+
+func (a *App) selectedLayerIndexes() []int {
+	selected := make([]int, 0, len(a.doc.Layers))
+	for i := range a.doc.Layers {
+		if a.doc.Layers[i].Selected {
+			selected = append(selected, i)
+		}
+	}
+	if len(selected) == 0 && len(a.doc.Layers) > 0 {
+		a.doc.Layers[0].Selected = true
+		selected = append(selected, 0)
+	}
+	return selected
+}
+
+func (a *App) updateSelectedLayerLabel() {
+	pairs := a.selectedInstancePairs()
+	if len(pairs) == 1 {
+		li, ii := pairs[0][0], pairs[0][1]
+		a.selNameEl.Set("textContent", a.doc.Layers[li].Instances[ii].Name)
+		return
+	}
+	if len(pairs) > 1 {
+		a.selNameEl.Set("textContent", fmt.Sprintf("%d instances", len(pairs)))
+		return
+	}
+	selected := a.selectedLayerIndexes()
+	if len(selected) == 0 {
+		a.selNameEl.Set("textContent", "None")
+		return
+	}
+	names := make([]string, 0, len(selected))
+	for _, idx := range selected {
+		names = append(names, a.doc.Layers[idx].Name)
+	}
+	a.selNameEl.Set("textContent", strings.Join(names, ", "))
+}
+
+func (a *App) selectLayer(layerIdx int, additive bool) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return
+	}
+	if additive {
+		a.doc.Layers[layerIdx].Selected = !a.doc.Layers[layerIdx].Selected
+	} else {
+		for i := range a.doc.Layers {
+			a.doc.Layers[i].Selected = i == layerIdx
+		}
+	}
+	a.updateSelectedLayerLabel()
+}
+
+func (a *App) addPathInstanceToSelectedLayers(pathID string, baseKeyframe InstanceKeyframe) {
+	selected := a.selectedLayerIndexes()
+	for _, layerIdx := range selected {
+		layer := &a.doc.Layers[layerIdx]
+		n := len(layer.Instances) + 1
+		inst := ElementInstance{
+			ID:          fmt.Sprintf("layer-%d-path-instance-%d", layerIdx+1, n),
+			Name:        fmt.Sprintf("Path %d", n),
+			Description: "Pen path instance",
+			ElementType: "path",
+			ElementID:   pathID,
+			Keyframes:   make(map[int]InstanceKeyframe),
+		}
+		baseKeyframe.Frame = a.curFrame
+		inst.Keyframes[a.curFrame] = baseKeyframe
+		layer.Instances = append([]ElementInstance{inst}, layer.Instances...)
+	}
+}
+
+func (a *App) addCircleInstanceToSelectedLayers(circleID string, baseKeyframe InstanceKeyframe) {
+	selected := a.selectedLayerIndexes()
+	for _, layerIdx := range selected {
+		layer := &a.doc.Layers[layerIdx]
+		n := len(layer.Instances) + 1
+		inst := ElementInstance{
+			ID:          fmt.Sprintf("layer-%d-circle-instance-%d", layerIdx+1, n),
+			Name:        fmt.Sprintf("Circle %d", n),
+			Description: "Circle shape instance",
+			ElementType: "circle",
+			ElementID:   circleID,
+			Keyframes:   make(map[int]InstanceKeyframe),
+		}
+		baseKeyframe.Frame = a.curFrame
+		inst.Keyframes[a.curFrame] = baseKeyframe
+		layer.Instances = append([]ElementInstance{inst}, layer.Instances...)
+	}
+}
+
+func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return InstanceKeyframe{}, false
+	}
+	layer := a.doc.Layers[layerIdx]
+	if instIdx < 0 || instIdx >= len(layer.Instances) {
+		return InstanceKeyframe{}, false
+	}
+	inst := layer.Instances[instIdx]
+	found := false
+	best := -1
+	for f := range inst.Keyframes {
+		if f <= frame && f > best {
+			best = f
+			found = true
+		}
+	}
+	if !found {
+		return InstanceKeyframe{}, false
+	}
+	kf := inst.Keyframes[best]
+	kf.Frame = frame
+	return kf, true
+}
+
+func (a *App) getOrCreateInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return InstanceKeyframe{}, false
+	}
+	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+		return InstanceKeyframe{}, false
+	}
+	inst := &a.doc.Layers[layerIdx].Instances[instIdx]
+	if existing, ok := inst.Keyframes[frame]; ok {
+		return existing, true
+	} else if base, ok := a.getInstanceKeyframe(layerIdx, instIdx, frame); ok {
+		base.Frame = frame
+		inst.Keyframes[frame] = base
+		return base, true
+	} else {
+		kf := defaultKeyframeAt(frame)
+		inst.Keyframes[frame] = kf
+		return kf, true
+	}
+}
+
+func (a *App) setInstanceKeyframe(layerIdx, instIdx, frame int, kf InstanceKeyframe) bool {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return false
+	}
+	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+		return false
+	}
+	kf.Frame = frame
+	a.doc.Layers[layerIdx].Instances[instIdx].Keyframes[frame] = kf
+	return true
+}
+
+func (a *App) clearInstanceSelection() {
+	a.selectedLayerIdx = -1
+	a.selectedInstIdx = -1
+	a.selectedInstances = make(map[string]bool)
+	a.selectedPathPt = -1
+	a.selectedHandle = ""
+}
+
+func selKey(layerIdx, instIdx int) string {
+	return fmt.Sprintf("%d:%d", layerIdx, instIdx)
+}
+
+func parseSelKey(key string) (int, int, bool) {
+	var li, ii int
+	if _, err := fmt.Sscanf(key, "%d:%d", &li, &ii); err != nil {
+		return 0, 0, false
+	}
+	return li, ii, true
+}
+
+func (a *App) isInstanceSelected(layerIdx, instIdx int) bool {
+	return a.selectedInstances[selKey(layerIdx, instIdx)]
+}
+
+func (a *App) selectedInstancePairs() [][2]int {
+	out := make([][2]int, 0, len(a.selectedInstances))
+	for key := range a.selectedInstances {
+		li, ii, ok := parseSelKey(key)
+		if !ok {
+			continue
+		}
+		if li < 0 || li >= len(a.doc.Layers) || ii < 0 || ii >= len(a.doc.Layers[li].Instances) {
+			continue
+		}
+		out = append(out, [2]int{li, ii})
+	}
+	return out
+}
+
+func (a *App) selectedInstancePairsOrPrimary() [][2]int {
+	pairs := a.selectedInstancePairs()
+	if len(pairs) > 0 {
+		return pairs
+	}
+	if a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 {
+		return [][2]int{{a.selectedLayerIdx, a.selectedInstIdx}}
+	}
+	return nil
+}
+
+func (a *App) setPrimarySelection(layerIdx, instIdx int) {
+	a.selectedLayerIdx = layerIdx
+	a.selectedInstIdx = instIdx
+}
+
+func (a *App) setSingleInstanceSelection(layerIdx, instIdx int) {
+	a.selectedInstances = make(map[string]bool)
+	a.selectedInstances[selKey(layerIdx, instIdx)] = true
+	a.setPrimarySelection(layerIdx, instIdx)
+}
+
+func (a *App) toggleInstanceSelection(layerIdx, instIdx int) {
+	key := selKey(layerIdx, instIdx)
+	if a.selectedInstances[key] {
+		delete(a.selectedInstances, key)
+		if a.selectedLayerIdx == layerIdx && a.selectedInstIdx == instIdx {
+			a.selectedLayerIdx = -1
+			a.selectedInstIdx = -1
+			for k := range a.selectedInstances {
+				li, ii, ok := parseSelKey(k)
+				if ok {
+					a.setPrimarySelection(li, ii)
+					break
+				}
+			}
+		}
+		return
+	}
+	a.selectedInstances[key] = true
+	a.setPrimarySelection(layerIdx, instIdx)
+}
+
+func (a *App) findPathByID(id string) (VectorPath, bool) {
+	for _, p := range a.doc.Paths {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return VectorPath{}, false
+}
+
+func (a *App) findCircleByID(id string) (VectorCircle, bool) {
+	for _, c := range a.doc.Circles {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return VectorCircle{}, false
+}
+
+func dist(x1, y1, x2, y2 float64) float64 { return math.Hypot(x1-x2, y1-y2) }
+
+func normalizeHexColor(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.ReplaceAll(s, " ", "")
+	if strings.HasPrefix(s, "#") {
+		if len(s) == 4 {
+			return fmt.Sprintf("#%c%c%c%c%c%c", s[1], s[1], s[2], s[2], s[3], s[3])
+		}
+		if len(s) == 7 {
+			return s
+		}
+	}
+	if strings.HasPrefix(s, "rgb(") || strings.HasPrefix(s, "rgba(") {
+		var r, g, b int
+		if strings.HasPrefix(s, "rgba(") {
+			if _, err := fmt.Sscanf(s, "rgba(%d,%d,%d", &r, &g, &b); err == nil {
+				return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+			}
+		}
+		if _, err := fmt.Sscanf(s, "rgb(%d,%d,%d", &r, &g, &b); err == nil {
+			return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+		}
+	}
+	return "#66e3ff"
+}
+
+func (a *App) applyTransformField(field string, value float64) {
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame)
+		if !ok {
+			continue
+		}
+		switch field {
+		case "x":
+			kf.X = value
+		case "y":
+			kf.Y = value
+		case "scaleX":
+			kf.ScaleX = value
+		case "scaleY":
+			kf.ScaleY = value
+		case "skewX":
+			kf.SkewX = value
+		case "skewY":
+			kf.SkewY = value
+		case "rotation":
+			kf.Rotation = value
+		case "anchorX":
+			kf.AnchorX = value
+		case "anchorY":
+			kf.AnchorY = value
+		}
+		a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+	}
+}
+
+func (a *App) applyShapeColor(field, color string) {
+	color = normalizeHexColor(color)
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		inst := a.doc.Layers[li].Instances[ii]
+		switch inst.ElementType {
+		case "path":
+			for pi := range a.doc.Paths {
+				if a.doc.Paths[pi].ID != inst.ElementID {
+					continue
+				}
+				if field == "fill" {
+					a.doc.Paths[pi].Fill = color
+				} else {
+					a.doc.Paths[pi].Stroke = color
+				}
+				break
+			}
+		case "circle":
+			for ci := range a.doc.Circles {
+				if a.doc.Circles[ci].ID != inst.ElementID {
+					continue
+				}
+				if field == "fill" {
+					a.doc.Circles[ci].Fill = color
+				} else {
+					a.doc.Circles[ci].Stroke = color
+				}
+				break
+			}
+		}
+	}
+}
+
+func (a *App) applyShapeNumeric(field string, value float64) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return
+	}
+	if field == "strokeW" && value < 0 {
+		value = 0
+	}
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		inst := a.doc.Layers[li].Instances[ii]
+		switch inst.ElementType {
+		case "path":
+			for pi := range a.doc.Paths {
+				if a.doc.Paths[pi].ID != inst.ElementID {
+					continue
+				}
+				if field == "strokeW" {
+					a.doc.Paths[pi].StrokeW = value
+				}
+				break
+			}
+		case "circle":
+			for ci := range a.doc.Circles {
+				if a.doc.Circles[ci].ID != inst.ElementID {
+					continue
+				}
+				if field == "strokeW" {
+					a.doc.Circles[ci].StrokeW = value
+				}
+				break
+			}
+		}
+	}
+}
+
+func (a *App) applyRotationDelta(deltaRad float64) {
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame)
+		if !ok {
+			continue
+		}
+		kf.Rotation += deltaRad
+		a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+	}
+}
+
+func (a *App) updatePropertiesPanel() {
+	hasSel := a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0
+	controls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY, a.propFill, a.propStroke, a.propStrokeW}
+	for _, c := range controls {
+		if !c.Truthy() {
+			continue
+		}
+		c.Set("disabled", !hasSel)
+	}
+	if !hasSel {
+		return
+	}
+	kf, ok := a.getOrCreateInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
+	if ok {
+		a.propPosX.Set("value", fmt.Sprintf("%.2f", kf.X))
+		a.propPosY.Set("value", fmt.Sprintf("%.2f", kf.Y))
+		a.propScaleX.Set("value", fmt.Sprintf("%.3f", kf.ScaleX))
+		a.propScaleY.Set("value", fmt.Sprintf("%.3f", kf.ScaleY))
+		a.propSkewX.Set("value", fmt.Sprintf("%.3f", kf.SkewX))
+		a.propSkewY.Set("value", fmt.Sprintf("%.3f", kf.SkewY))
+		a.propRot.Set("value", fmt.Sprintf("%.3f", kf.Rotation))
+		a.propAncX.Set("value", fmt.Sprintf("%.2f", kf.AnchorX))
+		a.propAncY.Set("value", fmt.Sprintf("%.2f", kf.AnchorY))
+	}
+	inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+	shape := inst.ElementType == "path" || inst.ElementType == "circle"
+	a.propFill.Set("disabled", !shape)
+	a.propStroke.Set("disabled", !shape)
+	a.propStrokeW.Set("disabled", !shape)
+	if inst.ElementType == "path" {
+		if p, ok := a.findPathByID(inst.ElementID); ok {
+			a.propFill.Set("value", normalizeHexColor(p.Fill))
+			a.propStroke.Set("value", normalizeHexColor(p.Stroke))
+			a.propStrokeW.Set("value", fmt.Sprintf("%.2f", p.StrokeW))
+		}
+	}
+	if inst.ElementType == "circle" {
+		if c, ok := a.findCircleByID(inst.ElementID); ok {
+			a.propFill.Set("value", normalizeHexColor(c.Fill))
+			a.propStroke.Set("value", normalizeHexColor(c.Stroke))
+			a.propStrokeW.Set("value", fmt.Sprintf("%.2f", c.StrokeW))
+		}
+	}
+}
+
+func drawPathLocal(ctx js.Value, p VectorPath) {
+	if len(p.Points) < 2 {
+		return
+	}
+	ctx.Call("beginPath")
+	ctx.Call("moveTo", p.Points[0].X, p.Points[0].Y)
+	for i := 1; i < len(p.Points); i++ {
+		prev := p.Points[i-1]
+		cur := p.Points[i]
+		ctx.Call("bezierCurveTo", prev.OutX, prev.OutY, cur.InX, cur.InY, cur.X, cur.Y)
+	}
+	if p.Closed {
+		last := p.Points[len(p.Points)-1]
+		first := p.Points[0]
+		ctx.Call("bezierCurveTo", last.OutX, last.OutY, first.InX, first.InY, first.X, first.Y)
+		ctx.Call("closePath")
+		if p.Fill != "" && p.Fill != "transparent" {
+			ctx.Set("fillStyle", p.Fill)
+			ctx.Call("fill")
+		}
+	}
+	ctx.Set("lineWidth", p.StrokeW)
+	ctx.Set("strokeStyle", p.Stroke)
+	ctx.Call("stroke")
+}
+
+func drawCircleLocal(ctx js.Value, c VectorCircle) {
+	ctx.Set("fillStyle", c.Fill)
+	ctx.Call("beginPath")
+	ctx.Call("arc", c.CX, c.CY, c.Radius, 0, math.Pi*2)
+	ctx.Call("fill")
+	ctx.Set("lineWidth", c.StrokeW)
+	ctx.Set("strokeStyle", c.Stroke)
+	ctx.Call("stroke")
+}
+
+func pathLocalBounds(p VectorPath) (float64, float64, float64, float64, bool) {
+	if len(p.Points) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	minX, minY := p.Points[0].X, p.Points[0].Y
+	maxX, maxY := minX, minY
+	update := func(x, y float64) {
+		if x < minX {
+			minX = x
+		}
+		if y < minY {
+			minY = y
+		}
+		if x > maxX {
+			maxX = x
+		}
+		if y > maxY {
+			maxY = y
+		}
+	}
+	for _, pt := range p.Points {
+		update(pt.X, pt.Y)
+		update(pt.InX, pt.InY)
+		update(pt.OutX, pt.OutY)
+	}
+	return minX, minY, maxX, maxY, true
+}
+
+func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, float64, float64, bool) {
+	inst := a.doc.Layers[layerIdx].Instances[instIdx]
+	kf, ok := a.getInstanceKeyframe(layerIdx, instIdx, a.curFrame)
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	m := instanceMatrix(kf)
+	setBounds := func(pts [][2]float64) (float64, float64, float64, float64, bool) {
+		if len(pts) == 0 {
+			return 0, 0, 0, 0, false
+		}
+		wx, wy := matApply(m, pts[0][0], pts[0][1])
+		minX, minY, maxX, maxY := wx, wy, wx, wy
+		for i := 1; i < len(pts); i++ {
+			x, y := matApply(m, pts[i][0], pts[i][1])
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+		return minX, minY, maxX, maxY, true
+	}
+
+	if inst.ElementType == "path" {
+		p, ok := a.findPathByID(inst.ElementID)
+		if !ok {
+			return 0, 0, 0, 0, false
+		}
+		minX, minY, maxX, maxY, ok := pathLocalBounds(p)
+		if !ok {
+			return 0, 0, 0, 0, false
+		}
+		return setBounds([][2]float64{{minX, minY}, {maxX, minY}, {maxX, maxY}, {minX, maxY}})
+	}
+	if inst.ElementType == "circle" {
+		c, ok := a.findCircleByID(inst.ElementID)
+		if !ok {
+			return 0, 0, 0, 0, false
+		}
+		return setBounds([][2]float64{
+			{c.CX - c.Radius, c.CY - c.Radius},
+			{c.CX + c.Radius, c.CY - c.Radius},
+			{c.CX + c.Radius, c.CY + c.Radius},
+			{c.CX - c.Radius, c.CY + c.Radius},
+		})
+	}
+	return 0, 0, 0, 0, false
+}
+
+func (a *App) pickInstanceAt(x, y float64) (int, int, bool) {
+	for li := len(a.doc.Layers) - 1; li >= 0; li-- {
+		layer := a.doc.Layers[li]
+		for ii := len(layer.Instances) - 1; ii >= 0; ii-- {
+			inst := layer.Instances[ii]
+			if inst.ElementType != "path" && inst.ElementType != "circle" {
+				continue
+			}
+			minX, minY, maxX, maxY, ok := a.instanceBoundsWorld(li, ii)
+			if !ok {
+				continue
+			}
+			if x >= minX && x <= maxX && y >= minY && y <= maxY {
+				return li, ii, true
+			}
+		}
+	}
+	return -1, -1, false
+}
+
+func (a *App) selectedAnchorWorld() (float64, float64, bool) {
+	if a.selectedLayerIdx < 0 || a.selectedInstIdx < 0 {
+		return 0, 0, false
+	}
+	kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
+	if !ok {
+		return 0, 0, false
+	}
+	return kf.X + kf.AnchorX, kf.Y + kf.AnchorY, true
+}
+
+func movePointHandleWeighted(pt BezierPoint, handle string, x, y float64) BezierPoint {
+	switch handle {
+	case "in":
+		// Move incoming handle directly.
+		pt.InX = x
+		pt.InY = y
+		// Keep opposite tangent colinear for smooth weighted tangent behavior.
+		vx := pt.X - x
+		vy := pt.Y - y
+		vlen := math.Hypot(vx, vy)
+		ovx := pt.OutX - pt.X
+		ovy := pt.OutY - pt.Y
+		olen := math.Hypot(ovx, ovy)
+		if olen < 1e-4 {
+			olen = vlen
+		}
+		if vlen > 1e-4 {
+			nx := vx / vlen
+			ny := vy / vlen
+			pt.OutX = pt.X + nx*olen
+			pt.OutY = pt.Y + ny*olen
+		}
+	case "out":
+		// Move outgoing handle directly.
+		pt.OutX = x
+		pt.OutY = y
+		// Keep opposite tangent colinear for smooth weighted tangent behavior.
+		vx := pt.X - x
+		vy := pt.Y - y
+		vlen := math.Hypot(vx, vy)
+		ivx := pt.InX - pt.X
+		ivy := pt.InY - pt.Y
+		ilen := math.Hypot(ivx, ivy)
+		if ilen < 1e-4 {
+			ilen = vlen
+		}
+		if vlen > 1e-4 {
+			nx := vx / vlen
+			ny := vy / vlen
+			pt.InX = pt.X + nx*ilen
+			pt.InY = pt.Y + ny*ilen
+		}
+	}
+	return pt
+}
+
+func (a *App) clearPenDraft() {
+	a.penEditing = false
+	a.penPoints = nil
+	a.penMouseDown = false
+	a.penDragIndex = -1
+	a.penDragMoved = false
+}
+
+func (a *App) commitPenPath(closed bool) {
+	if len(a.penPoints) < 2 {
+		a.clearPenDraft()
+		return
+	}
+
+	sumX := 0.0
+	sumY := 0.0
+	for _, p := range a.penPoints {
+		sumX += p.X
+		sumY += p.Y
+	}
+	cx := sumX / float64(len(a.penPoints))
+	cy := sumY / float64(len(a.penPoints))
+
+	localPts := make([]BezierPoint, 0, len(a.penPoints))
+	for _, p := range a.penPoints {
+		localPts = append(localPts, BezierPoint{
+			X:    p.X - cx,
+			Y:    p.Y - cy,
+			InX:  p.InX - cx,
+			InY:  p.InY - cy,
+			OutX: p.OutX - cx,
+			OutY: p.OutY - cy,
+		})
+	}
+
+	pathID := a.nextPathID()
+	path := VectorPath{
+		ID:      pathID,
+		Points:  localPts,
+		Stroke:  "#66e3ff",
+		StrokeW: 2,
+		Closed:  closed,
+	}
+	if closed {
+		path.Fill = "rgba(102, 227, 255, 0.25)"
+	} else {
+		path.Fill = "transparent"
+	}
+
+	a.doc.Paths = append(a.doc.Paths, path)
+	kf := defaultKeyframeAt(a.curFrame)
+	kf.X = cx
+	kf.Y = cy
+	kf.AnchorX = 0
+	kf.AnchorY = 0
+	a.addPathInstanceToSelectedLayers(pathID, kf)
+	if closed {
+		a.statusEl.Set("textContent", "Closed path created on selected layers")
+	} else {
+		a.statusEl.Set("textContent", "Open stroked path created on selected layers")
+	}
+	a.clearPenDraft()
 }
 
 func (a *App) loadDocumentJSONText(text string) error {
@@ -467,6 +1356,81 @@ func (a *App) bindUI() {
 		})
 		b.Call("addEventListener", "click", cb)
 	}
+	// properties panel bindings
+	readNumber := func(this js.Value) (float64, bool) {
+		v := this.Get("valueAsNumber").Float()
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return v, true
+		}
+		s := strings.TrimSpace(this.Get("value").String())
+		if s == "" {
+			return 0, false
+		}
+		parsed, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			return 0, false
+		}
+		return parsed, true
+	}
+	bindNum := func(el js.Value, field string) {
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			v, ok := readNumber(this)
+			if !ok {
+				return nil
+			}
+			a.applyTransformField(field, v)
+			return nil
+		})
+		a.holdCallback(cb)
+		el.Call("addEventListener", "input", cb)
+		el.Call("addEventListener", "change", cb)
+	}
+	bindColor := func(el js.Value, field string) {
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.applyShapeColor(field, this.Get("value").String())
+			return nil
+		})
+		a.holdCallback(cb)
+		el.Call("addEventListener", "input", cb)
+		el.Call("addEventListener", "change", cb)
+	}
+	bindShapeNum := func(el js.Value, field string) {
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			v, ok := readNumber(this)
+			if !ok {
+				return nil
+			}
+			a.applyShapeNumeric(field, v)
+			return nil
+		})
+		a.holdCallback(cb)
+		el.Call("addEventListener", "input", cb)
+		el.Call("addEventListener", "change", cb)
+	}
+	bindNum(a.propPosX, "x")
+	bindNum(a.propPosY, "y")
+	bindNum(a.propScaleX, "scaleX")
+	bindNum(a.propScaleY, "scaleY")
+	bindNum(a.propSkewX, "skewX")
+	bindNum(a.propSkewY, "skewY")
+	bindNum(a.propRot, "rotation")
+	bindNum(a.propAncX, "anchorX")
+	bindNum(a.propAncY, "anchorY")
+	bindColor(a.propFill, "fill")
+	bindColor(a.propStroke, "stroke")
+	bindShapeNum(a.propStrokeW, "strokeW")
+	rotDecCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyRotationDelta(-5 * math.Pi / 180)
+		return nil
+	})
+	rotIncCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyRotationDelta(5 * math.Pi / 180)
+		return nil
+	})
+	a.holdCallback(rotDecCb)
+	a.holdCallback(rotIncCb)
+	a.propRotDec.Call("addEventListener", "click", rotDecCb)
+	a.propRotInc.Call("addEventListener", "click", rotIncCb)
 
 	// publish button (demo)
 	d.Call("getElementById", "btn-publish").Call("addEventListener", "click",
@@ -493,11 +1457,15 @@ func (a *App) bindUI() {
 	// add layer
 	d.Call("getElementById", "btn-layer").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
+			for i := range a.doc.Layers {
+				a.doc.Layers[i].Selected = false
+			}
 			n := len(a.doc.Layers) + 1
 			a.doc.Layers = append([]Layer{{
 				Name:        fmt.Sprintf("Layer %d", n),
 				Description: fmt.Sprintf("User created layer %d", n),
 				Color:       "#c77dff",
+				Selected:    true,
 				Instances: []ElementInstance{{
 					ID:          fmt.Sprintf("layer-%d-instance-1", n),
 					Name:        "Symbol Instance",
@@ -505,6 +1473,7 @@ func (a *App) bindUI() {
 					Keyframes:   make(map[int]InstanceKeyframe),
 				}},
 			}}, a.doc.Layers...)
+			a.updateSelectedLayerLabel()
 			return nil
 		}),
 	)
@@ -529,6 +1498,15 @@ func (a *App) bindUI() {
 		if key == "ArrowRight" {
 			a.setFrame(a.curFrame + 1)
 		}
+		if key == "Enter" && a.activeTool == "pencil" && len(a.penPoints) >= 2 {
+			e.Call("preventDefault")
+			a.commitPenPath(false)
+		}
+		if key == "Escape" && a.activeTool == "pencil" && a.penEditing {
+			e.Call("preventDefault")
+			a.clearPenDraft()
+			a.statusEl.Set("textContent", "Pen path canceled")
+		}
 		return nil
 	}))
 
@@ -543,6 +1521,19 @@ func (a *App) bindUI() {
 			a.draggingPH = true
 			a.playing = false
 			return nil
+		}
+
+		// click layer header area to select layer (Ctrl/Cmd toggles)
+		if x <= a.headerW {
+			rowTop := 14.0
+			if y >= rowTop {
+				layerIdx := int((y - rowTop) / a.layerH)
+				if layerIdx >= 0 && layerIdx < len(a.doc.Layers) {
+					additive := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool()
+					a.selectLayer(layerIdx, additive)
+					return nil
+				}
+			}
 		}
 
 		// click to set frame (in grid area)
@@ -563,55 +1554,362 @@ func (a *App) bindUI() {
 	}))
 	w.Call("addEventListener", "mouseup", js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.draggingPH = false
+		a.dragMode = ""
 		if a.drawingCircle {
 			a.drawingCircle = false
+		}
+		if a.penMouseDown {
+			a.penMouseDown = false
+			a.penDragIndex = -1
+			a.penDragMoved = false
 		}
 		return nil
 	}))
 
 	// stage drawing interactions
 	a.stageCanvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
-		if a.activeTool != "circle" {
-			return nil
-		}
 		e := args[0]
-		a.circleStartX = e.Get("offsetX").Float()
-		a.circleStartY = e.Get("offsetY").Float()
-		a.circleNowX = a.circleStartX
-		a.circleNowY = a.circleStartY
-		a.drawingCircle = true
+		x := e.Get("offsetX").Float()
+		y := e.Get("offsetY").Float()
+
+		switch a.activeTool {
+		case "select":
+			a.lastMouseX = x
+			a.lastMouseY = y
+			a.dragMode = ""
+			a.marqueeActive = false
+			additive := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool() || e.Get("shiftKey").Bool()
+			if a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 {
+				ax, ay, ok := a.selectedAnchorWorld()
+				if ok && dist(x, y, ax, ay) <= 8 {
+					a.dragMode = "anchor"
+					return nil
+				}
+				minX, minY, maxX, maxY, ok := a.instanceBoundsWorld(a.selectedLayerIdx, a.selectedInstIdx)
+				if ok {
+					rotateX := (minX + maxX) / 2
+					rotateY := minY - 18
+					scaleX, scaleY := maxX, maxY
+					skewXx, skewXy := maxX+14, (minY+maxY)/2
+					skewYx, skewYy := (minX+maxX)/2, maxY+14
+					if dist(x, y, rotateX, rotateY) <= 8 {
+						a.dragMode = "rotate"
+						return nil
+					}
+					if dist(x, y, scaleX, scaleY) <= 8 {
+						a.dragMode = "scale"
+						return nil
+					}
+					if dist(x, y, skewXx, skewXy) <= 8 {
+						a.dragMode = "skewX"
+						return nil
+					}
+					if dist(x, y, skewYx, skewYy) <= 8 {
+						a.dragMode = "skewY"
+						return nil
+					}
+				}
+			}
+			if li, ii, ok := a.pickInstanceAt(x, y); ok {
+				if additive {
+					a.toggleInstanceSelection(li, ii)
+					if !a.isInstanceSelected(li, ii) {
+						a.dragMode = ""
+						a.updateSelectedLayerLabel()
+						return nil
+					}
+				} else {
+					a.setSingleInstanceSelection(li, ii)
+				}
+				a.selectedPathPt = -1
+				a.selectedHandle = ""
+				if !additive {
+					for i := range a.doc.Layers {
+						a.doc.Layers[i].Selected = i == li
+					}
+				}
+				a.updateSelectedLayerLabel()
+				a.dragMode = "move"
+			} else {
+				if !additive {
+					a.clearInstanceSelection()
+				}
+				a.marqueeActive = true
+				a.marqueeStartX = x
+				a.marqueeStartY = y
+				a.marqueeNowX = x
+				a.marqueeNowY = y
+				a.marqueeAdditive = additive
+			}
+		case "subselect":
+			a.lastMouseX = x
+			a.lastMouseY = y
+			a.dragMode = ""
+			if a.selectedLayerIdx < 0 || a.selectedInstIdx < 0 {
+				if li, ii, ok := a.pickInstanceAt(x, y); ok {
+					a.setSingleInstanceSelection(li, ii)
+				} else {
+					return nil
+				}
+			}
+			inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+			if inst.ElementType != "path" {
+				return nil
+			}
+			p, ok := a.findPathByID(inst.ElementID)
+			if !ok {
+				return nil
+			}
+			kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
+			if !ok {
+				return nil
+			}
+			m := instanceMatrix(kf)
+			closest := -1
+			closestHandle := ""
+			best := 1e9
+			for i, pt := range p.Points {
+				ax, ay := matApply(m, pt.X, pt.Y)
+				d := dist(x, y, ax, ay)
+				if d < best && d <= 8 {
+					best = d
+					closest = i
+					closestHandle = "anchor"
+				}
+				hx, hy := matApply(m, pt.InX, pt.InY)
+				d = dist(x, y, hx, hy)
+				if d < best && d <= 7 {
+					best = d
+					closest = i
+					closestHandle = "in"
+				}
+				hx, hy = matApply(m, pt.OutX, pt.OutY)
+				d = dist(x, y, hx, hy)
+				if d < best && d <= 7 {
+					best = d
+					closest = i
+					closestHandle = "out"
+				}
+			}
+			a.selectedPathPt = closest
+			a.selectedHandle = closestHandle
+			if closest >= 0 {
+				a.dragMode = "subselect"
+			}
+		case "circle":
+			a.circleStartX = x
+			a.circleStartY = y
+			a.circleNowX = x
+			a.circleNowY = y
+			a.drawingCircle = true
+		case "pencil":
+			a.penMouseX = x
+			a.penMouseY = y
+			if len(a.penPoints) >= 2 {
+				first := a.penPoints[0]
+				if math.Hypot(x-first.X, y-first.Y) <= 8 {
+					a.commitPenPath(true)
+					return nil
+				}
+			}
+			a.penEditing = true
+			a.penMouseDown = true
+			a.penDragMoved = false
+			a.penPoints = append(a.penPoints, BezierPoint{
+				X:    x,
+				Y:    y,
+				InX:  x,
+				InY:  y,
+				OutX: x,
+				OutY: y,
+			})
+			a.penDragIndex = len(a.penPoints) - 1
+		}
 		return nil
 	}))
 	a.stageCanvas.Call("addEventListener", "mousemove", js.FuncOf(func(this js.Value, args []js.Value) any {
-		if !a.drawingCircle {
-			return nil
-		}
 		e := args[0]
-		a.circleNowX = e.Get("offsetX").Float()
-		a.circleNowY = e.Get("offsetY").Float()
+		x := e.Get("offsetX").Float()
+		y := e.Get("offsetY").Float()
+
+		if a.marqueeActive {
+			a.marqueeNowX = x
+			a.marqueeNowY = y
+		}
+
+		if a.dragMode != "" && len(a.selectedInstancePairs()) > 0 {
+			dx := x - a.lastMouseX
+			dy := y - a.lastMouseY
+			for _, pair := range a.selectedInstancePairs() {
+				li, ii := pair[0], pair[1]
+				if kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame); ok {
+					switch a.dragMode {
+					case "move":
+						kf.X += dx
+						kf.Y += dy
+						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+					case "anchor":
+						kf.AnchorX += dx
+						kf.AnchorY += dy
+						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+					case "rotate":
+						ax, ay := kf.X+kf.AnchorX, kf.Y+kf.AnchorY
+						prevA := math.Atan2(a.lastMouseY-ay, a.lastMouseX-ax)
+						curA := math.Atan2(y-ay, x-ax)
+						kf.Rotation += curA - prevA
+						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+					case "scale":
+						ax, ay := kf.X+kf.AnchorX, kf.Y+kf.AnchorY
+						prevD := math.Hypot(a.lastMouseX-ax, a.lastMouseY-ay)
+						curD := math.Hypot(x-ax, y-ay)
+						if prevD > 1e-3 {
+							s := curD / prevD
+							kf.ScaleX *= s
+							kf.ScaleY *= s
+							a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+						}
+					case "skewX":
+						kf.SkewX += dx * 0.01
+						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+					case "skewY":
+						kf.SkewY += dy * 0.01
+						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+					}
+				}
+			}
+		}
+
+		if a.dragMode == "subselect" && a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 && a.selectedPathPt >= 0 {
+			inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+			if inst.ElementType == "path" {
+				for pi := range a.doc.Paths {
+					if a.doc.Paths[pi].ID != inst.ElementID {
+						continue
+					}
+					kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
+					if !ok {
+						break
+					}
+					inv, ok := matInvert(instanceMatrix(kf))
+					if !ok {
+						break
+					}
+					lx, ly := matApply(inv, x, y)
+					pt := a.doc.Paths[pi].Points[a.selectedPathPt]
+					switch a.selectedHandle {
+					case "anchor":
+						dpx := lx - pt.X
+						dpy := ly - pt.Y
+						pt.X = lx
+						pt.Y = ly
+						pt.InX += dpx
+						pt.InY += dpy
+						pt.OutX += dpx
+						pt.OutY += dpy
+					case "in":
+						pt = movePointHandleWeighted(pt, "in", lx, ly)
+					case "out":
+						pt = movePointHandleWeighted(pt, "out", lx, ly)
+					}
+					a.doc.Paths[pi].Points[a.selectedPathPt] = pt
+					break
+				}
+			}
+		}
+		if a.drawingCircle {
+			a.circleNowX = x
+			a.circleNowY = y
+		}
+		if a.activeTool == "pencil" {
+			a.penMouseX = x
+			a.penMouseY = y
+		}
+		if a.penMouseDown && a.penDragIndex >= 0 && a.penDragIndex < len(a.penPoints) {
+			p := a.penPoints[a.penDragIndex]
+			if math.Hypot(x-p.X, y-p.Y) >= 2 {
+				a.penDragMoved = true
+			}
+			if a.penDragMoved {
+				p.OutX = x
+				p.OutY = y
+				p.InX = 2*p.X - x
+				p.InY = 2*p.Y - y
+				a.penPoints[a.penDragIndex] = p
+			}
+		}
+		a.lastMouseX = x
+		a.lastMouseY = y
 		return nil
 	}))
 	a.stageCanvas.Call("addEventListener", "mouseup", js.FuncOf(func(this js.Value, args []js.Value) any {
-		if !a.drawingCircle {
-			return nil
-		}
 		e := args[0]
-		a.circleNowX = e.Get("offsetX").Float()
-		a.circleNowY = e.Get("offsetY").Float()
-		r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
-		if r >= 2 {
-			a.doc.Circles = append(a.doc.Circles, VectorCircle{
-				ID:      a.nextCircleID(),
-				CX:      a.circleStartX,
-				CY:      a.circleStartY,
-				Radius:  r,
-				Fill:    "rgba(255, 204, 102, 0.35)",
-				Stroke:  "#ffcc66",
-				StrokeW: 2,
-			})
-			a.statusEl.Set("textContent", "Circle created")
+		x := e.Get("offsetX").Float()
+		y := e.Get("offsetY").Float()
+		a.dragMode = ""
+		if a.marqueeActive {
+			a.marqueeNowX = x
+			a.marqueeNowY = y
+			minX := math.Min(a.marqueeStartX, a.marqueeNowX)
+			maxX := math.Max(a.marqueeStartX, a.marqueeNowX)
+			minY := math.Min(a.marqueeStartY, a.marqueeNowY)
+			maxY := math.Max(a.marqueeStartY, a.marqueeNowY)
+			if !a.marqueeAdditive {
+				a.selectedInstances = make(map[string]bool)
+				a.selectedLayerIdx = -1
+				a.selectedInstIdx = -1
+			}
+			for li := range a.doc.Layers {
+				for ii := range a.doc.Layers[li].Instances {
+					inst := a.doc.Layers[li].Instances[ii]
+					if inst.ElementType != "path" && inst.ElementType != "circle" {
+						continue
+					}
+					bx0, by0, bx1, by1, ok := a.instanceBoundsWorld(li, ii)
+					if !ok {
+						continue
+					}
+					intersects := bx1 >= minX && bx0 <= maxX && by1 >= minY && by0 <= maxY
+					if intersects {
+						a.selectedInstances[selKey(li, ii)] = true
+						a.selectedLayerIdx = li
+						a.selectedInstIdx = ii
+					}
+				}
+			}
+			a.marqueeActive = false
+			a.updateSelectedLayerLabel()
 		}
-		a.drawingCircle = false
+		if a.drawingCircle {
+			a.circleNowX = x
+			a.circleNowY = y
+			r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
+			if r >= 2 {
+				circleID := a.nextCircleID()
+				a.doc.Circles = append(a.doc.Circles, VectorCircle{
+					ID:      circleID,
+					CX:      0,
+					CY:      0,
+					Radius:  r,
+					Fill:    "rgba(255, 204, 102, 0.35)",
+					Stroke:  "#ffcc66",
+					StrokeW: 2,
+				})
+				kf := defaultKeyframeAt(a.curFrame)
+				kf.X = a.circleStartX
+				kf.Y = a.circleStartY
+				kf.AnchorX = 0
+				kf.AnchorY = 0
+				a.addCircleInstanceToSelectedLayers(circleID, kf)
+				a.statusEl.Set("textContent", "Circle created")
+			}
+			a.drawingCircle = false
+		}
+		if a.penMouseDown {
+			a.penMouseDown = false
+			a.penDragIndex = -1
+		}
+		a.lastMouseX = x
+		a.lastMouseY = y
 		return nil
 	}))
 
@@ -620,6 +1918,9 @@ func (a *App) bindUI() {
 
 func (a *App) setActiveTool(tool string) {
 	d := js.Global().Get("document")
+	if a.activeTool == "pencil" && tool != "pencil" && a.penEditing {
+		a.clearPenDraft()
+	}
 	a.activeTool = tool
 
 	btns := d.Call("querySelectorAll", ".toolbtn")
@@ -643,6 +1944,7 @@ func (a *App) setActiveTool(tool string) {
 	// friendly name
 	name := map[string]string{
 		"select":    "Selection",
+		"subselect": "Subselection",
 		"transform": "Transform",
 		"text":      "Text",
 		"shape":     "Shape",
@@ -656,7 +1958,7 @@ func (a *App) setActiveTool(tool string) {
 		name = tool
 	}
 	a.selToolEl.Set("textContent", name)
-	if tool == "circle" {
+	if tool == "circle" || tool == "pencil" {
 		a.stageCanvas.Get("style").Set("cursor", "crosshair")
 	} else {
 		a.stageCanvas.Get("style").Set("cursor", "default")
@@ -695,6 +1997,7 @@ func (a *App) tick() {
 	} else {
 		a.isPlayEl.Set("textContent", "No")
 	}
+	a.updatePropertiesPanel()
 
 	if !a.playing {
 		return
@@ -781,16 +2084,33 @@ func (a *App) renderStage() {
 	ctx.Set("fillStyle", "#fff")
 	ctx.Call("fillRect", x+14, y-10, 10, 6) // snout highlight
 
-	// vector circles on stage
-	for _, c := range a.doc.Circles {
-		ctx.Set("fillStyle", c.Fill)
-		ctx.Call("beginPath")
-		ctx.Call("arc", c.CX, c.CY, c.Radius, 0, math.Pi*2)
-		ctx.Call("fill")
-
-		ctx.Set("lineWidth", c.StrokeW)
-		ctx.Set("strokeStyle", c.Stroke)
-		ctx.Call("stroke")
+	// draw shape instances
+	for li := range a.doc.Layers {
+		layer := a.doc.Layers[li]
+		for ii := range layer.Instances {
+			inst := layer.Instances[ii]
+			kf, ok := a.getInstanceKeyframe(li, ii, a.curFrame)
+			if !ok {
+				continue
+			}
+			if inst.ElementType != "path" && inst.ElementType != "circle" {
+				continue
+			}
+			ctx.Call("save")
+			m := instanceMatrix(kf)
+			ctx.Call("transform", m.a, m.b, m.c, m.d, m.e, m.f)
+			if inst.ElementType == "path" {
+				if p, ok := a.findPathByID(inst.ElementID); ok {
+					drawPathLocal(ctx, p)
+				}
+			}
+			if inst.ElementType == "circle" {
+				if c, ok := a.findCircleByID(inst.ElementID); ok {
+					drawCircleLocal(ctx, c)
+				}
+			}
+			ctx.Call("restore")
+		}
 	}
 
 	// in-progress circle preview
@@ -803,6 +2123,154 @@ func (a *App) renderStage() {
 		ctx.Set("lineWidth", 1.5)
 		ctx.Set("strokeStyle", "rgba(255, 255, 255, 0.9)")
 		ctx.Call("stroke")
+	}
+	if a.penEditing && len(a.penPoints) >= 1 {
+		ctx.Call("beginPath")
+		ctx.Call("moveTo", a.penPoints[0].X, a.penPoints[0].Y)
+		for i := 1; i < len(a.penPoints); i++ {
+			prev := a.penPoints[i-1]
+			cur := a.penPoints[i]
+			ctx.Call("bezierCurveTo", prev.OutX, prev.OutY, cur.InX, cur.InY, cur.X, cur.Y)
+		}
+		if !a.penMouseDown && len(a.penPoints) > 0 {
+			last := a.penPoints[len(a.penPoints)-1]
+			ctx.Call("lineTo", a.penMouseX, a.penMouseY)
+			ctx.Set("strokeStyle", "rgba(255,255,255,0.35)")
+			ctx.Set("lineWidth", 1)
+			ctx.Call("stroke")
+			ctx.Call("beginPath")
+			ctx.Call("arc", last.X, last.Y, 2.5, 0, math.Pi*2)
+			ctx.Set("fillStyle", "rgba(255,255,255,0.9)")
+			ctx.Call("fill")
+		}
+		ctx.Set("lineWidth", 2)
+		ctx.Set("strokeStyle", "rgba(255,255,255,0.9)")
+		ctx.Call("stroke")
+
+		// anchor and handle preview
+		for i := range a.penPoints {
+			p := a.penPoints[i]
+			ctx.Set("strokeStyle", "rgba(255,255,255,0.45)")
+			ctx.Set("lineWidth", 1)
+			ctx.Call("beginPath")
+			ctx.Call("moveTo", p.X, p.Y)
+			ctx.Call("lineTo", p.InX, p.InY)
+			ctx.Call("moveTo", p.X, p.Y)
+			ctx.Call("lineTo", p.OutX, p.OutY)
+			ctx.Call("stroke")
+
+			ctx.Set("fillStyle", "#ffffff")
+			ctx.Call("beginPath")
+			ctx.Call("arc", p.X, p.Y, 3, 0, math.Pi*2)
+			ctx.Call("fill")
+			ctx.Call("beginPath")
+			ctx.Call("arc", p.InX, p.InY, 2, 0, math.Pi*2)
+			ctx.Call("fill")
+			ctx.Call("beginPath")
+			ctx.Call("arc", p.OutX, p.OutY, 2, 0, math.Pi*2)
+			ctx.Call("fill")
+		}
+
+		// highlight start anchor to close path
+		if len(a.penPoints) >= 2 {
+			first := a.penPoints[0]
+			ctx.Set("strokeStyle", "rgba(102,227,255,0.9)")
+			ctx.Set("lineWidth", 1.5)
+			ctx.Call("beginPath")
+			ctx.Call("arc", first.X, first.Y, 6, 0, math.Pi*2)
+			ctx.Call("stroke")
+		}
+	}
+
+	// selected instance transform controls
+	for _, pair := range a.selectedInstancePairs() {
+		li, ii := pair[0], pair[1]
+		minX, minY, maxX, maxY, ok := a.instanceBoundsWorld(li, ii)
+		if !ok {
+			continue
+		}
+		ctx.Set("strokeStyle", "rgba(255, 204, 102, 0.95)")
+		ctx.Set("lineWidth", 1.5)
+		ctx.Call("strokeRect", minX, minY, maxX-minX, maxY-minY)
+
+		rotateX := (minX + maxX) / 2
+		rotateY := minY - 18
+		scaleX, scaleY := maxX, maxY
+		skewXx, skewXy := maxX+14, (minY+maxY)/2
+		skewYx, skewYy := (minX+maxX)/2, maxY+14
+		kf, ok := a.getInstanceKeyframe(li, ii, a.curFrame)
+		if !ok {
+			continue
+		}
+		ax, ay := kf.X+kf.AnchorX, kf.Y+kf.AnchorY
+		ctx.Set("fillStyle", "#ffcc66")
+		for _, h := range [][2]float64{{rotateX, rotateY}, {scaleX, scaleY}, {skewXx, skewXy}, {skewYx, skewYy}, {ax, ay}} {
+			ctx.Call("beginPath")
+			ctx.Call("arc", h[0], h[1], 5, 0, math.Pi*2)
+			ctx.Call("fill")
+		}
+	}
+
+	// marquee selection rectangle
+	if a.marqueeActive {
+		minX := math.Min(a.marqueeStartX, a.marqueeNowX)
+		maxX := math.Max(a.marqueeStartX, a.marqueeNowX)
+		minY := math.Min(a.marqueeStartY, a.marqueeNowY)
+		maxY := math.Max(a.marqueeStartY, a.marqueeNowY)
+		ctx.Set("fillStyle", "rgba(255,204,102,0.12)")
+		ctx.Call("fillRect", minX, minY, maxX-minX, maxY-minY)
+		ctx.Set("strokeStyle", "rgba(255,204,102,0.95)")
+		ctx.Set("lineWidth", 1)
+		ctx.Call("strokeRect", minX, minY, maxX-minX, maxY-minY)
+	}
+
+	// subselect display: all anchors + selected point handles
+	if a.activeTool == "subselect" && a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 {
+		inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+		if inst.ElementType == "path" {
+			if p, ok := a.findPathByID(inst.ElementID); ok {
+				if kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame); ok {
+					m := instanceMatrix(kf)
+
+					// Show all path anchors so users can subselect specific points.
+					for i, pt := range p.Points {
+						ax, ay := matApply(m, pt.X, pt.Y)
+						if i == a.selectedPathPt {
+							ctx.Set("fillStyle", "#66e3ff")
+						} else {
+							ctx.Set("fillStyle", "#ffffff")
+						}
+						ctx.Call("beginPath")
+						ctx.Call("arc", ax, ay, 4, 0, math.Pi*2)
+						ctx.Call("fill")
+					}
+
+					// Reveal and allow editing handles for selected point.
+					if a.selectedPathPt >= 0 && a.selectedPathPt < len(p.Points) {
+						pt := p.Points[a.selectedPathPt]
+						ax, ay := matApply(m, pt.X, pt.Y)
+						inx, iny := matApply(m, pt.InX, pt.InY)
+						outx, outy := matApply(m, pt.OutX, pt.OutY)
+						ctx.Set("strokeStyle", "rgba(255,255,255,0.8)")
+						ctx.Set("lineWidth", 1)
+						ctx.Call("beginPath")
+						ctx.Call("moveTo", ax, ay)
+						ctx.Call("lineTo", inx, iny)
+						ctx.Call("moveTo", ax, ay)
+						ctx.Call("lineTo", outx, outy)
+						ctx.Call("stroke")
+
+						ctx.Set("fillStyle", "#9fd6ff")
+						ctx.Call("beginPath")
+						ctx.Call("arc", inx, iny, 3.5, 0, math.Pi*2)
+						ctx.Call("fill")
+						ctx.Call("beginPath")
+						ctx.Call("arc", outx, outy, 3.5, 0, math.Pi*2)
+						ctx.Call("fill")
+					}
+				}
+			}
+		}
 	}
 
 	// stage border vibe
@@ -859,7 +2327,9 @@ func (a *App) renderTimeline() {
 	for i, layer := range a.doc.Layers {
 		y := topPad + float64(i)*a.layerH + 22
 		// row background
-		if i%2 == 0 {
+		if layer.Selected {
+			ctx.Set("fillStyle", "rgba(255, 204, 102, 0.12)")
+		} else if i%2 == 0 {
 			ctx.Set("fillStyle", "rgba(255,255,255,0.02)")
 		} else {
 			ctx.Set("fillStyle", "rgba(0,0,0,0.0)")
@@ -1072,11 +2542,15 @@ func (a *App) handleMenuAction(action string) {
 		a.statusEl.Set("textContent", "Zoom reset")
 
 	case "insert.layer":
+		for i := range a.doc.Layers {
+			a.doc.Layers[i].Selected = false
+		}
 		n := len(a.doc.Layers) + 1
 		a.doc.Layers = append([]Layer{{
 			Name:        fmt.Sprintf("Layer %d", n),
 			Description: fmt.Sprintf("User created layer %d", n),
 			Color:       "#c77dff",
+			Selected:    true,
 			Instances: []ElementInstance{{
 				ID:          fmt.Sprintf("layer-%d-instance-1", n),
 				Name:        "Symbol Instance",
@@ -1084,6 +2558,7 @@ func (a *App) handleMenuAction(action string) {
 				Keyframes:   make(map[int]InstanceKeyframe),
 			}},
 		}}, a.doc.Layers...)
+		a.updateSelectedLayerLabel()
 		a.statusEl.Set("textContent", "Layer added")
 
 	case "insert.keyframe":

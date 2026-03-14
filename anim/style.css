@@ -112,7 +112,13 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 .leftPanel, .rightPanel{
   background:var(--panel); border-right:1px solid var(--line);
 }
-.rightPanel{ border-right:none; border-left:1px solid var(--line); }
+.rightPanel{
+  border-right:none;
+  border-left:1px solid var(--line);
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
 
 .panelTitle{
   padding:10px; border-bottom:1px solid var(--line); color:var(--muted);
@@ -137,14 +143,50 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   background:#202428; border:1px solid var(--line); border-radius:12px;
 }
 
-.tabs{ display:flex; border-bottom:1px solid var(--line); }
+.tabs{
+  display:flex;
+  border-bottom:1px solid var(--line);
+  flex:0 0 auto;
+}
 .tab{ padding:10px; color:var(--muted); border-right:1px solid var(--line); }
 .tab.active{ color:var(--text); background:var(--panel2); }
-.panelBody{ padding:10px; }
+.panelBody{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:10px;
+  scrollbar-gutter:stable;
+}
 .groupTitle{ margin:10px 0 6px; color:var(--muted); font-size:12px; }
 .row{ display:flex; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
 .label{ width:90px; color:var(--muted); }
 .value{ flex:1; text-align:right; }
+.propInput{
+  width:100%;
+  max-width:140px;
+  background:#1c1e21;
+  color:var(--text);
+  border:1px solid var(--line);
+  border-radius:6px;
+  padding:4px 6px;
+  font:12px/1.1 system-ui;
+}
+.propInline{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  justify-content:flex-end;
+}
+.propBtn{
+  width:24px;
+  height:24px;
+  border:1px solid var(--line);
+  background:#1c1e21;
+  color:var(--text);
+  border-radius:6px;
+  cursor:pointer;
+}
 .hint{ margin-top:10px; color:var(--muted); font-size:12px; }
 
 .timeline{
