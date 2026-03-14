@@ -157,6 +157,8 @@
           <div class="row"><div class="label">Fill</div><div class="value"><input id="propFill" class="propInput" type="color" value="#66e3ff" /></div></div>
           <div class="row"><div class="label">Stroke</div><div class="value"><input id="propStroke" class="propInput" type="color" value="#66e3ff" /></div></div>
           <div class="row"><div class="label">Stroke W</div><div class="value"><input id="propStrokeW" class="propInput" type="number" min="0" step="0.1" /></div></div>
+          <div class="row"><div class="label">Ease Mode</div><div class="value"><select id="propEaseMode" class="propInput"><option value="linear">Linear</option><option value="sine">Sine</option><option value="cubic">Cubic</option><option value="quintic">Quintic</option></select></div></div>
+          <div class="row"><div class="label">Ease Dir</div><div class="value"><select id="propEaseDir" class="propInput"><option value="out">Ease Out</option><option value="in">Ease In</option></select></div></div>
 
           <div class="groupTitle">Playback</div>
           <div class="row"><div class="label">Frame</div><div id="curFrame" class="value">1</div></div>
@@ -170,6 +172,7 @@
       <div class="timelineHeader">
         <div class="panelTitle">Timeline</div>
         <div class="spacer"></div>
+        <button id="btn-add-keyframe" class="btn small">+ Keyframe</button>
         <button id="btn-layer" class="btn small">+ Layer</button>
         <button id="btn-zoom" class="btn small">Zoom +</button>
         <button id="btn-zoom-2" class="btn small">Zoom &minus;</button>

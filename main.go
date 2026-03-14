@@ -41,6 +41,8 @@ type InstanceKeyframe struct {
 	AnchorX  float64 `json:"anchorX"`
 	AnchorY  float64 `json:"anchorY"`
 	Opacity  float64 `json:"opacity"`
+	EaseMode string  `json:"easeMode,omitempty"`
+	EaseDir  string  `json:"easeDir,omitempty"`
 }
 
 type BezierPoint struct {
@@ -157,7 +159,75 @@ func defaultKeyframeAt(frame int) InstanceKeyframe {
 		AnchorX:  0,
 		AnchorY:  0,
 		Opacity:  1,
+		EaseMode: "linear",
+		EaseDir:  "out",
 	}
+}
+
+func normalizeEaseMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "linear":
+		return "linear"
+	case "sine":
+		return "sine"
+	case "cubic":
+		return "cubic"
+	case "quint", "quintic", "quantic":
+		return "quintic"
+	default:
+		return "linear"
+	}
+}
+
+func normalizeEaseDir(dir string) string {
+	switch strings.ToLower(strings.TrimSpace(dir)) {
+	case "in":
+		return "in"
+	case "", "out":
+		return "out"
+	default:
+		return "out"
+	}
+}
+
+func easeValue(t float64, mode, dir string) float64 {
+	if t <= 0 {
+		return 0
+	}
+	if t >= 1 {
+		return 1
+	}
+	mode = normalizeEaseMode(mode)
+	dir = normalizeEaseDir(dir)
+	if mode == "linear" {
+		return t
+	}
+	if dir == "in" {
+		switch mode {
+		case "sine":
+			return 1 - math.Cos((t*math.Pi)/2)
+		case "cubic":
+			return t * t * t
+		case "quintic":
+			return t * t * t * t * t
+		}
+	}
+	switch mode {
+	case "sine":
+		return math.Sin((t * math.Pi) / 2)
+	case "cubic":
+		u := 1 - t
+		return 1 - u*u*u
+	case "quintic":
+		u := 1 - t
+		return 1 - u*u*u*u*u
+	default:
+		return t
+	}
+}
+
+func lerpFloat(a, b, t float64) float64 {
+	return a + (b-a)*t
 }
 
 func (l *Layer) hasKeyframe(frame int) bool {
@@ -177,7 +247,12 @@ func (a *App) addKeyframe(layerIdx, instanceIdx, frame int) {
 		return
 	}
 	inst := &a.doc.Layers[layerIdx].Instances[instanceIdx]
-	inst.Keyframes[frame] = defaultKeyframeAt(frame)
+	kf, ok := a.getInstanceKeyframe(layerIdx, instanceIdx, frame)
+	if !ok {
+		kf = defaultKeyframeAt(frame)
+	}
+	kf.Frame = frame
+	inst.Keyframes[frame] = kf
 }
 
 type mat2d struct {
@@ -251,27 +326,29 @@ type App struct {
 	tlCanvas js.Value
 	tlCtx    js.Value
 
-	statusEl    js.Value
-	docSizeEl   js.Value
-	docFpsEl    js.Value
-	curFrameEl  js.Value
-	isPlayEl    js.Value
-	selNameEl   js.Value
-	selToolEl   js.Value
-	propPosX    js.Value
-	propPosY    js.Value
-	propScaleX  js.Value
-	propScaleY  js.Value
-	propSkewX   js.Value
-	propSkewY   js.Value
-	propRot     js.Value
-	propRotDec  js.Value
-	propRotInc  js.Value
-	propAncX    js.Value
-	propAncY    js.Value
-	propFill    js.Value
-	propStroke  js.Value
-	propStrokeW js.Value
+	statusEl     js.Value
+	docSizeEl    js.Value
+	docFpsEl     js.Value
+	curFrameEl   js.Value
+	isPlayEl     js.Value
+	selNameEl    js.Value
+	selToolEl    js.Value
+	propPosX     js.Value
+	propPosY     js.Value
+	propScaleX   js.Value
+	propScaleY   js.Value
+	propSkewX    js.Value
+	propSkewY    js.Value
+	propRot      js.Value
+	propRotDec   js.Value
+	propRotInc   js.Value
+	propAncX     js.Value
+	propAncY     js.Value
+	propFill     js.Value
+	propStroke   js.Value
+	propStrokeW  js.Value
+	propEaseMode js.Value
+	propEaseDir  js.Value
 
 	// timeline state
 	curFrame int // 1-based
@@ -283,7 +360,8 @@ type App struct {
 	playheadX  float64
 	draggingPH bool
 
-	lastTick time.Time
+	lastTick  time.Time
+	playAccum float64
 
 	// stage demo
 	foxX float64
@@ -302,20 +380,24 @@ type App struct {
 	penMouseX    float64
 	penMouseY    float64
 
-	selectedLayerIdx  int
-	selectedInstIdx   int
-	selectedInstances map[string]bool
-	selectedPathPt    int
-	selectedHandle    string
-	dragMode          string
-	lastMouseX        float64
-	lastMouseY        float64
-	marqueeActive     bool
-	marqueeStartX     float64
-	marqueeStartY     float64
-	marqueeNowX       float64
-	marqueeNowY       float64
-	marqueeAdditive   bool
+	selectedLayerIdx        int
+	selectedInstIdx         int
+	selectedInstances       map[string]bool
+	selectedPathPt          int
+	selectedHandle          string
+	selectedTweenLayerIdx   int
+	selectedTweenInstIdx    int
+	selectedTweenStartFrame int
+	selectedTweenEndFrame   int
+	dragMode                string
+	lastMouseX              float64
+	lastMouseY              float64
+	marqueeActive           bool
+	marqueeStartX           float64
+	marqueeStartY           float64
+	marqueeNowX             float64
+	marqueeNowY             float64
+	marqueeAdditive         bool
 
 	heldCallbacks []js.Func
 }
@@ -327,17 +409,21 @@ func (a *App) holdCallback(fn js.Func) js.Func {
 
 func main() {
 	app := &App{
-		doc:               newDefaultDocument(),
-		activeTool:        "select",
-		curFrame:          1,
-		zoom:              10,  // px per frame
-		layerH:            28,  // px
-		headerW:           180, // px
-		foxX:              120, // demo actor x
-		selectedLayerIdx:  -1,
-		selectedInstIdx:   -1,
-		selectedInstances: make(map[string]bool),
-		selectedPathPt:    -1,
+		doc:                     newDefaultDocument(),
+		activeTool:              "select",
+		curFrame:                1,
+		zoom:                    10,  // px per frame
+		layerH:                  28,  // px
+		headerW:                 180, // px
+		foxX:                    120, // demo actor x
+		selectedLayerIdx:        -1,
+		selectedInstIdx:         -1,
+		selectedInstances:       make(map[string]bool),
+		selectedPathPt:          -1,
+		selectedTweenLayerIdx:   -1,
+		selectedTweenInstIdx:    -1,
+		selectedTweenStartFrame: -1,
+		selectedTweenEndFrame:   -1,
 	}
 
 	app.initDOM()
@@ -389,6 +475,8 @@ func (a *App) initDOM() {
 	a.propFill = d.Call("getElementById", "propFill")
 	a.propStroke = d.Call("getElementById", "propStroke")
 	a.propStrokeW = d.Call("getElementById", "propStrokeW")
+	a.propEaseMode = d.Call("getElementById", "propEaseMode")
+	a.propEaseDir = d.Call("getElementById", "propEaseDir")
 
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
@@ -479,6 +567,8 @@ func normalizeDocument(doc *Document) {
 				if kf.Opacity < 0 || kf.Opacity > 1 {
 					kf.Opacity = 1
 				}
+				kf.EaseMode = normalizeEaseMode(kf.EaseMode)
+				kf.EaseDir = normalizeEaseDir(kf.EaseDir)
 				inst.Keyframes[frame] = kf
 			}
 		}
@@ -650,19 +740,65 @@ func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyfram
 		return InstanceKeyframe{}, false
 	}
 	inst := layer.Instances[instIdx]
-	found := false
+	if exact, ok := inst.Keyframes[frame]; ok {
+		exact.Frame = frame
+		exact.EaseMode = normalizeEaseMode(exact.EaseMode)
+		exact.EaseDir = normalizeEaseDir(exact.EaseDir)
+		return exact, true
+	}
+	prevFound := false
+	nextFound := false
 	best := -1
+	next := a.doc.TotalFrames + 1
 	for f := range inst.Keyframes {
 		if f <= frame && f > best {
 			best = f
-			found = true
+			prevFound = true
+		}
+		if f > frame && f < next {
+			next = f
+			nextFound = true
 		}
 	}
-	if !found {
+	if !prevFound && !nextFound {
 		return InstanceKeyframe{}, false
 	}
-	kf := inst.Keyframes[best]
-	kf.Frame = frame
+	if !prevFound {
+		kf := inst.Keyframes[next]
+		kf.Frame = frame
+		kf.EaseMode = normalizeEaseMode(kf.EaseMode)
+		kf.EaseDir = normalizeEaseDir(kf.EaseDir)
+		return kf, true
+	}
+	prev := inst.Keyframes[best]
+	prev.EaseMode = normalizeEaseMode(prev.EaseMode)
+	prev.EaseDir = normalizeEaseDir(prev.EaseDir)
+	if !nextFound {
+		prev.Frame = frame
+		return prev, true
+	}
+	if next <= best {
+		prev.Frame = frame
+		return prev, true
+	}
+	nextKF := inst.Keyframes[next]
+	t := float64(frame-best) / float64(next-best)
+	t = easeValue(t, prev.EaseMode, prev.EaseDir)
+	kf := InstanceKeyframe{
+		Frame:    frame,
+		X:        lerpFloat(prev.X, nextKF.X, t),
+		Y:        lerpFloat(prev.Y, nextKF.Y, t),
+		ScaleX:   lerpFloat(prev.ScaleX, nextKF.ScaleX, t),
+		ScaleY:   lerpFloat(prev.ScaleY, nextKF.ScaleY, t),
+		SkewX:    lerpFloat(prev.SkewX, nextKF.SkewX, t),
+		SkewY:    lerpFloat(prev.SkewY, nextKF.SkewY, t),
+		Rotation: lerpFloat(prev.Rotation, nextKF.Rotation, t),
+		AnchorX:  lerpFloat(prev.AnchorX, nextKF.AnchorX, t),
+		AnchorY:  lerpFloat(prev.AnchorY, nextKF.AnchorY, t),
+		Opacity:  lerpFloat(prev.Opacity, nextKF.Opacity, t),
+		EaseMode: prev.EaseMode,
+		EaseDir:  prev.EaseDir,
+	}
 	return kf, true
 }
 
@@ -687,6 +823,17 @@ func (a *App) getOrCreateInstanceKeyframe(layerIdx, instIdx, frame int) (Instanc
 	}
 }
 
+func (a *App) getExactInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return InstanceKeyframe{}, false
+	}
+	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+		return InstanceKeyframe{}, false
+	}
+	kf, ok := a.doc.Layers[layerIdx].Instances[instIdx].Keyframes[frame]
+	return kf, ok
+}
+
 func (a *App) setInstanceKeyframe(layerIdx, instIdx, frame int, kf InstanceKeyframe) bool {
 	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
 		return false
@@ -705,6 +852,14 @@ func (a *App) clearInstanceSelection() {
 	a.selectedInstances = make(map[string]bool)
 	a.selectedPathPt = -1
 	a.selectedHandle = ""
+	a.clearTweenSelection()
+}
+
+func (a *App) clearTweenSelection() {
+	a.selectedTweenLayerIdx = -1
+	a.selectedTweenInstIdx = -1
+	a.selectedTweenStartFrame = -1
+	a.selectedTweenEndFrame = -1
 }
 
 func selKey(layerIdx, instIdx int) string {
@@ -752,6 +907,9 @@ func (a *App) selectedInstancePairsOrPrimary() [][2]int {
 func (a *App) setPrimarySelection(layerIdx, instIdx int) {
 	a.selectedLayerIdx = layerIdx
 	a.selectedInstIdx = instIdx
+	if a.selectedTweenLayerIdx != layerIdx || a.selectedTweenInstIdx != instIdx {
+		a.clearTweenSelection()
+	}
 }
 
 func (a *App) setSingleInstanceSelection(layerIdx, instIdx int) {
@@ -767,6 +925,7 @@ func (a *App) toggleInstanceSelection(layerIdx, instIdx int) {
 		if a.selectedLayerIdx == layerIdx && a.selectedInstIdx == instIdx {
 			a.selectedLayerIdx = -1
 			a.selectedInstIdx = -1
+			a.clearTweenSelection()
 			for k := range a.selectedInstances {
 				li, ii, ok := parseSelKey(k)
 				if ok {
@@ -779,6 +938,72 @@ func (a *App) toggleInstanceSelection(layerIdx, instIdx int) {
 	}
 	a.selectedInstances[key] = true
 	a.setPrimarySelection(layerIdx, instIdx)
+}
+
+func (a *App) setSelectedTween(layerIdx, instIdx, startFrame, endFrame int) {
+	a.selectedTweenLayerIdx = layerIdx
+	a.selectedTweenInstIdx = instIdx
+	a.selectedTweenStartFrame = startFrame
+	a.selectedTweenEndFrame = endFrame
+}
+
+func (a *App) selectedTweenKeyframe() (InstanceKeyframe, bool) {
+	if a.selectedTweenLayerIdx < 0 || a.selectedTweenInstIdx < 0 || a.selectedTweenStartFrame < 0 {
+		return InstanceKeyframe{}, false
+	}
+	return a.getExactInstanceKeyframe(a.selectedTweenLayerIdx, a.selectedTweenInstIdx, a.selectedTweenStartFrame)
+}
+
+func (a *App) selectedInstanceTweenFrames(layerIdx, instIdx int) []int {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return nil
+	}
+	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+		return nil
+	}
+	inst := a.doc.Layers[layerIdx].Instances[instIdx]
+	frames := make([]int, 0, len(inst.Keyframes))
+	for frame := range inst.Keyframes {
+		frames = append(frames, frame)
+	}
+	for i := 0; i < len(frames); i++ {
+		for j := i + 1; j < len(frames); j++ {
+			if frames[j] < frames[i] {
+				frames[i], frames[j] = frames[j], frames[i]
+			}
+		}
+	}
+	return frames
+}
+
+func (a *App) pickTweenSpanAt(x, y float64) (int, int, int, int, bool) {
+	if x <= a.headerW {
+		return -1, -1, -1, -1, false
+	}
+	rowTop := 10.0 + 22.0 - 18.0
+	layerIdx := int((y - rowTop) / a.layerH)
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return -1, -1, -1, -1, false
+	}
+	if a.selectedLayerIdx != layerIdx || a.selectedInstIdx < 0 {
+		return -1, -1, -1, -1, false
+	}
+	instIdx := a.selectedInstIdx
+	frames := a.selectedInstanceTweenFrames(layerIdx, instIdx)
+	if len(frames) < 2 {
+		return -1, -1, -1, -1, false
+	}
+	keyW := math.Max(6, a.zoom-4)
+	for i := 0; i < len(frames)-1; i++ {
+		start := frames[i]
+		end := frames[i+1]
+		x0 := a.frameToX(start) + 2 + keyW
+		x1 := a.frameToX(end) + 2
+		if x >= x0 && x <= x1 {
+			return layerIdx, instIdx, start, end, true
+		}
+	}
+	return -1, -1, -1, -1, false
 }
 
 func (a *App) findPathByID(id string) (VectorPath, bool) {
@@ -829,7 +1054,7 @@ func normalizeHexColor(s string) string {
 func (a *App) applyTransformField(field string, value float64) {
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame)
+		kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame)
 		if !ok {
 			continue
 		}
@@ -929,7 +1154,7 @@ func (a *App) applyShapeNumeric(field string, value float64) {
 func (a *App) applyRotationDelta(deltaRad float64) {
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame)
+		kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame)
 		if !ok {
 			continue
 		}
@@ -938,10 +1163,49 @@ func (a *App) applyRotationDelta(deltaRad float64) {
 	}
 }
 
+func (a *App) applySelectedTweenEase(mode, dir string) {
+	kf, ok := a.selectedTweenKeyframe()
+	if !ok {
+		return
+	}
+	kf.EaseMode = normalizeEaseMode(mode)
+	kf.EaseDir = normalizeEaseDir(dir)
+	a.setInstanceKeyframe(a.selectedTweenLayerIdx, a.selectedTweenInstIdx, a.selectedTweenStartFrame, kf)
+}
+
+func (a *App) addKeyframeForSelectedInstances() {
+	pairs := a.selectedInstancePairsOrPrimary()
+	if len(pairs) == 0 {
+		a.statusEl.Set("textContent", "Select an instance to add a keyframe")
+		return
+	}
+
+	added := 0
+	for _, pair := range pairs {
+		li, ii := pair[0], pair[1]
+		if _, exists := a.getExactInstanceKeyframe(li, ii, a.curFrame); exists {
+			continue
+		}
+		a.addKeyframe(li, ii, a.curFrame)
+		added++
+	}
+
+	switch {
+	case added == 0:
+		a.statusEl.Set("textContent", fmt.Sprintf("Selected instance already has a keyframe at %d", a.curFrame))
+	case added == 1:
+		a.statusEl.Set("textContent", fmt.Sprintf("Keyframe added at %d", a.curFrame))
+	default:
+		a.statusEl.Set("textContent", fmt.Sprintf("%d keyframes added at %d", added, a.curFrame))
+	}
+}
+
 func (a *App) updatePropertiesPanel() {
 	hasSel := a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0
-	controls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY, a.propFill, a.propStroke, a.propStrokeW}
-	for _, c := range controls {
+	transformControls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY}
+	shapeControls := []js.Value{a.propFill, a.propStroke, a.propStrokeW}
+	tweenControls := []js.Value{a.propEaseMode, a.propEaseDir}
+	for _, c := range append(append(transformControls, shapeControls...), tweenControls...) {
 		if !c.Truthy() {
 			continue
 		}
@@ -950,8 +1214,24 @@ func (a *App) updatePropertiesPanel() {
 	if !hasSel {
 		return
 	}
-	kf, ok := a.getOrCreateInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
-	if ok {
+
+	kf, exact := a.getExactInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
+	for _, c := range transformControls {
+		if c.Truthy() {
+			c.Set("disabled", !exact)
+		}
+	}
+	if exact {
+		a.propPosX.Set("value", fmt.Sprintf("%.2f", kf.X))
+		a.propPosY.Set("value", fmt.Sprintf("%.2f", kf.Y))
+		a.propScaleX.Set("value", fmt.Sprintf("%.3f", kf.ScaleX))
+		a.propScaleY.Set("value", fmt.Sprintf("%.3f", kf.ScaleY))
+		a.propSkewX.Set("value", fmt.Sprintf("%.3f", kf.SkewX))
+		a.propSkewY.Set("value", fmt.Sprintf("%.3f", kf.SkewY))
+		a.propRot.Set("value", fmt.Sprintf("%.3f", kf.Rotation))
+		a.propAncX.Set("value", fmt.Sprintf("%.2f", kf.AnchorX))
+		a.propAncY.Set("value", fmt.Sprintf("%.2f", kf.AnchorY))
+	} else if kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame); ok {
 		a.propPosX.Set("value", fmt.Sprintf("%.2f", kf.X))
 		a.propPosY.Set("value", fmt.Sprintf("%.2f", kf.Y))
 		a.propScaleX.Set("value", fmt.Sprintf("%.3f", kf.ScaleX))
@@ -979,6 +1259,18 @@ func (a *App) updatePropertiesPanel() {
 			a.propFill.Set("value", normalizeHexColor(c.Fill))
 			a.propStroke.Set("value", normalizeHexColor(c.Stroke))
 			a.propStrokeW.Set("value", fmt.Sprintf("%.2f", c.StrokeW))
+		}
+	}
+	hasTween := a.selectedTweenLayerIdx == a.selectedLayerIdx &&
+		a.selectedTweenInstIdx == a.selectedInstIdx &&
+		a.selectedTweenStartFrame >= 0 &&
+		a.selectedTweenEndFrame > a.selectedTweenStartFrame
+	a.propEaseMode.Set("disabled", !hasTween)
+	a.propEaseDir.Set("disabled", !hasTween)
+	if hasTween {
+		if tweenKF, ok := a.selectedTweenKeyframe(); ok {
+			a.propEaseMode.Set("value", normalizeEaseMode(tweenKF.EaseMode))
+			a.propEaseDir.Set("value", normalizeEaseDir(tweenKF.EaseDir))
 		}
 	}
 }
@@ -1419,6 +1711,18 @@ func (a *App) bindUI() {
 	bindColor(a.propFill, "fill")
 	bindColor(a.propStroke, "stroke")
 	bindShapeNum(a.propStrokeW, "strokeW")
+	easeModeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applySelectedTweenEase(this.Get("value").String(), a.propEaseDir.Get("value").String())
+		return nil
+	})
+	easeDirCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applySelectedTweenEase(a.propEaseMode.Get("value").String(), this.Get("value").String())
+		return nil
+	})
+	a.holdCallback(easeModeCb)
+	a.holdCallback(easeDirCb)
+	a.propEaseMode.Call("addEventListener", "change", easeModeCb)
+	a.propEaseDir.Call("addEventListener", "change", easeDirCb)
 	rotDecCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applyRotationDelta(-5 * math.Pi / 180)
 		return nil
@@ -1450,6 +1754,13 @@ func (a *App) bindUI() {
 	d.Call("getElementById", "btn-zoom-2").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
 			a.zoom = math.Max(a.zoom/1.25, 4)
+			return nil
+		}),
+	)
+
+	d.Call("getElementById", "btn-add-keyframe").Call("addEventListener", "click",
+		js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.addKeyframeForSelectedInstances()
 			return nil
 		}),
 	)
@@ -1538,6 +1849,14 @@ func (a *App) bindUI() {
 
 		// click to set frame (in grid area)
 		if x > a.headerW {
+			if li, ii, start, end, ok := a.pickTweenSpanAt(x, y); ok {
+				a.setPrimarySelection(li, ii)
+				a.selectedInstances = map[string]bool{selKey(li, ii): true}
+				a.setSelectedTween(li, ii, start, end)
+				a.updateSelectedLayerLabel()
+				return nil
+			}
+			a.clearTweenSelection()
 			f := a.xToFrame(x)
 			a.setFrame(f)
 		}
@@ -1742,7 +2061,7 @@ func (a *App) bindUI() {
 			dy := y - a.lastMouseY
 			for _, pair := range a.selectedInstancePairs() {
 				li, ii := pair[0], pair[1]
-				if kf, ok := a.getOrCreateInstanceKeyframe(li, ii, a.curFrame); ok {
+				if kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame); ok {
 					switch a.dragMode {
 					case "move":
 						kf.X += dx
@@ -2000,6 +2319,7 @@ func (a *App) tick() {
 	a.updatePropertiesPanel()
 
 	if !a.playing {
+		a.playAccum = 0
 		return
 	}
 
@@ -2008,15 +2328,14 @@ func (a *App) tick() {
 		return
 	}
 
-	// step at least 1 frame when enough time accumulates
-	next := a.curFrame + int(math.Floor(advance))
-	if next == a.curFrame {
-		next++
+	a.playAccum += advance
+	for a.playAccum >= 1 {
+		a.curFrame++
+		if a.curFrame > a.doc.TotalFrames {
+			a.curFrame = 1
+		}
+		a.playAccum -= 1
 	}
-	if next > a.doc.TotalFrames {
-		next = 1
-	}
-	a.curFrame = next
 
 	// demo stage movement tied to frame
 	a.foxX = 120 + float64(a.curFrame)*3.0
@@ -2029,6 +2348,7 @@ func (a *App) setFrame(f int) {
 	if f > a.doc.TotalFrames {
 		f = a.doc.TotalFrames
 	}
+	a.dragMode = ""
 	a.curFrame = f
 }
 
@@ -2341,6 +2661,27 @@ func (a *App) renderTimeline() {
 		ctx.Set("font", "13px system-ui")
 		ctx.Call("fillText", layer.Name, 12, y)
 
+		if a.selectedLayerIdx == i && a.selectedInstIdx >= 0 && a.selectedInstIdx < len(layer.Instances) {
+			frames := a.selectedInstanceTweenFrames(i, a.selectedInstIdx)
+			keyW := math.Max(6, a.zoom-4)
+			for fi := 0; fi < len(frames)-1; fi++ {
+				start := frames[fi]
+				end := frames[fi+1]
+				x0 := a.frameToX(start) + 2 + keyW
+				x1 := a.frameToX(end) + 2
+				if x1 <= x0 {
+					continue
+				}
+				if a.selectedTweenLayerIdx == i && a.selectedTweenInstIdx == a.selectedInstIdx &&
+					a.selectedTweenStartFrame == start && a.selectedTweenEndFrame == end {
+					ctx.Set("fillStyle", "rgba(255, 204, 102, 0.9)")
+				} else {
+					ctx.Set("fillStyle", "rgba(255,255,255,0.24)")
+				}
+				ctx.Call("fillRect", x0, y-6, x1-x0, 6)
+			}
+		}
+
 		// keyframes
 		for f := 1; f <= a.doc.TotalFrames; f++ {
 			if !layer.hasKeyframe(f) {
@@ -2562,16 +2903,10 @@ func (a *App) handleMenuAction(action string) {
 		a.statusEl.Set("textContent", "Layer added")
 
 	case "insert.keyframe":
-		if len(a.doc.Layers) > 0 && len(a.doc.Layers[0].Instances) > 0 {
-			a.addKeyframe(0, 0, a.curFrame)
-		}
-		a.statusEl.Set("textContent", fmt.Sprintf("Keyframe added at %d", a.curFrame))
+		a.addKeyframeForSelectedInstances()
 
 	case "insert.blankKeyframe":
-		if len(a.doc.Layers) > 0 && len(a.doc.Layers[0].Instances) > 0 {
-			a.addKeyframe(0, 0, a.curFrame)
-		}
-		a.statusEl.Set("textContent", fmt.Sprintf("Blank keyframe hook at %d", a.curFrame))
+		a.addKeyframeForSelectedInstances()
 
 	case "modify.convertToSymbol":
 		a.statusEl.Set("textContent", "Convert to Symbol requested")
