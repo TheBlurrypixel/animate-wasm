@@ -66,6 +66,71 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   display:flex;
 }
 
+.contextMenu{
+  position:fixed;
+  top:0;
+  left:0;
+  min-width:160px;
+}
+
+.modalOverlay{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:24px;
+  background:rgba(0,0,0,0.45);
+  z-index:1200;
+}
+
+.modalOverlay.open{
+  display:flex;
+}
+
+.modalCard{
+  width:min(420px, 100%);
+  background:var(--panel2);
+  border:1px solid var(--line);
+  border-radius:14px;
+  box-shadow:0 18px 40px rgba(0,0,0,0.4);
+  overflow:hidden;
+}
+
+.modalTitle{
+  padding:14px 16px;
+  border-bottom:1px solid var(--line);
+  color:var(--text);
+  font-weight:600;
+}
+
+.modalBody{
+  display:grid;
+  gap:12px;
+  padding:16px;
+}
+
+.modalField{
+  display:grid;
+  gap:6px;
+}
+
+.modalLabel{
+  color:var(--muted);
+  font-size:12px;
+}
+
+.modalInput{
+  max-width:none;
+}
+
+.modalActions{
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+  padding:0 16px 16px;
+}
+
 .menuItem{
   padding:8px 10px;
   text-align:left;
@@ -101,6 +166,7 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   padding:8px 10px; border:1px solid var(--line); background:#1c1e21; color:var(--text);
   border-radius:8px; cursor:pointer;
 }
+.btn.active{ border-color:var(--accent); box-shadow:0 0 0 1px rgba(255,204,102,.35) inset; }
 .btn.small{ padding:6px 8px; font-size:12px; }
 .btn:hover,.toolbtn:hover{ border-color:#565d66; }
 

@@ -51,6 +51,7 @@
       <div class="menuWrap">
         <button id="btn-modify" class="menuBtn" data-menu="modify">Modify</button>
         <div class="dropdown" data-dropdown="modify">
+          <button id="btn-modify-document" class="menuItem" data-action="modify.document">Modify Document</button>
           <button id="btn-convert-to-symbol" class="menuItem" data-action="modify.convertToSymbol">Convert to Symbol</button>
           <button id="btn-break-apart" class="menuItem" data-action="modify.breakApart">Break Apart</button>
         </div>
@@ -172,12 +173,45 @@
       <div class="timelineHeader">
         <div class="panelTitle">Timeline</div>
         <div class="spacer"></div>
+        <button id="btn-autokey" class="btn small">Auto Key</button>
         <button id="btn-add-keyframe" class="btn small">+ Keyframe</button>
         <button id="btn-layer" class="btn small">+ Layer</button>
         <button id="btn-zoom" class="btn small">Zoom +</button>
         <button id="btn-zoom-2" class="btn small">Zoom &minus;</button>
       </div>
       <canvas id="timeline"></canvas>
+    </div>
+  </div>
+
+  <div id="layerContextMenu" class="dropdown contextMenu">
+    <button id="ctx-rename-layer" class="menuItem" type="button">Rename Layer</button>
+  </div>
+
+  <div id="docDialog" class="modalOverlay">
+    <div class="modalCard">
+      <div class="modalTitle">Modify Document</div>
+      <div class="modalBody">
+        <label class="modalField">
+          <span class="modalLabel">Width</span>
+          <input id="docDialogWidth" class="propInput modalInput" type="number" min="1" step="1" />
+        </label>
+        <label class="modalField">
+          <span class="modalLabel">Height</span>
+          <input id="docDialogHeight" class="propInput modalInput" type="number" min="1" step="1" />
+        </label>
+        <label class="modalField">
+          <span class="modalLabel">FPS</span>
+          <input id="docDialogFps" class="propInput modalInput" type="number" min="1" step="1" />
+        </label>
+        <label class="modalField">
+          <span class="modalLabel">Background</span>
+          <input id="docDialogBg" class="propInput modalInput" type="color" value="#808080" />
+        </label>
+      </div>
+      <div class="modalActions">
+        <button id="docDialogCancel" class="btn" type="button">Cancel</button>
+        <button id="docDialogSave" class="btn" type="button">Save</button>
+      </div>
     </div>
   </div>
 

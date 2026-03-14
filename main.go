@@ -79,6 +79,7 @@ type Document struct {
 	Width       int            `json:"width"`
 	Height      int            `json:"height"`
 	FPS         int            `json:"fps"`
+	Background  string         `json:"background"`
 	TotalFrames int            `json:"totalFrames"`
 	Layers      []Layer        `json:"layers"`
 	Circles     []VectorCircle `json:"circles"`
@@ -91,56 +92,19 @@ func newDefaultDocument() Document {
 		Width:       640,
 		Height:      360,
 		FPS:         24,
+		Background:  "#808080",
 		TotalFrames: 120,
 		Layers: []Layer{
 			{
-				Name:        "Fox",
-				Description: "Main fox character layer",
-				Color:       "#ff6b6b",
+				Name:        "Layer 1",
+				Description: "Default empty layer",
+				Color:       "#c77dff",
 				Selected:    true,
-				Instances: []ElementInstance{{
-					ID:          "fox-instance-1",
-					Name:        "Fox Symbol",
-					Description: "Primary fox instance on stage",
-					Keyframes:   make(map[int]InstanceKeyframe),
-				}},
-			},
-			{
-				Name:        "Foreground",
-				Description: "Foreground decorative elements",
-				Color:       "#ffd166",
-				Selected:    false,
-				Instances: []ElementInstance{{
-					ID:          "foreground-instance-1",
-					Name:        "Foreground Group",
-					Description: "Foreground grouped elements",
-					Keyframes:   make(map[int]InstanceKeyframe),
-				}},
-			},
-			{
-				Name:        "Background",
-				Description: "Background elements",
-				Color:       "#4dabf7",
-				Selected:    false,
-				Instances: []ElementInstance{{
-					ID:          "background-instance-1",
-					Name:        "Background Group",
-					Description: "Background grouped elements",
-					Keyframes:   make(map[int]InstanceKeyframe),
-				}},
+				Instances:   []ElementInstance{},
 			},
 		},
 		Circles: []VectorCircle{},
 		Paths:   []VectorPath{},
-	}
-
-	// mark a few keyframes
-	for _, f := range []int{1, 15, 30, 45, 60, 90, 120} {
-		doc.Layers[0].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
-	}
-	for _, f := range []int{1, 60, 120} {
-		doc.Layers[1].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
-		doc.Layers[2].Instances[0].Keyframes[f] = defaultKeyframeAt(f)
 	}
 
 	return doc
@@ -349,10 +313,20 @@ type App struct {
 	propStrokeW  js.Value
 	propEaseMode js.Value
 	propEaseDir  js.Value
+	layerCtxMenu js.Value
+	autoKeyBtn   js.Value
+	docDialog    js.Value
+	docDlgWidth  js.Value
+	docDlgHeight js.Value
+	docDlgFps    js.Value
+	docDlgBg     js.Value
+	docDlgCancel js.Value
+	docDlgSave   js.Value
 
 	// timeline state
 	curFrame int // 1-based
 	playing  bool
+	autoKey  bool
 
 	zoom       float64 // pixels per frame
 	layerH     float64
@@ -362,9 +336,6 @@ type App struct {
 
 	lastTick  time.Time
 	playAccum float64
-
-	// stage demo
-	foxX float64
 
 	drawingCircle bool
 	circleStartX  float64
@@ -389,6 +360,7 @@ type App struct {
 	selectedTweenInstIdx    int
 	selectedTweenStartFrame int
 	selectedTweenEndFrame   int
+	layerCtxTargetIdx       int
 	dragMode                string
 	lastMouseX              float64
 	lastMouseY              float64
@@ -415,7 +387,6 @@ func main() {
 		zoom:                    10,  // px per frame
 		layerH:                  28,  // px
 		headerW:                 180, // px
-		foxX:                    120, // demo actor x
 		selectedLayerIdx:        -1,
 		selectedInstIdx:         -1,
 		selectedInstances:       make(map[string]bool),
@@ -424,6 +395,7 @@ func main() {
 		selectedTweenInstIdx:    -1,
 		selectedTweenStartFrame: -1,
 		selectedTweenEndFrame:   -1,
+		layerCtxTargetIdx:       -1,
 	}
 
 	app.initDOM()
@@ -477,15 +449,39 @@ func (a *App) initDOM() {
 	a.propStrokeW = d.Call("getElementById", "propStrokeW")
 	a.propEaseMode = d.Call("getElementById", "propEaseMode")
 	a.propEaseDir = d.Call("getElementById", "propEaseDir")
+	a.layerCtxMenu = d.Call("getElementById", "layerContextMenu")
+	a.autoKeyBtn = d.Call("getElementById", "btn-autokey")
+	a.docDialog = d.Call("getElementById", "docDialog")
+	a.docDlgWidth = d.Call("getElementById", "docDialogWidth")
+	a.docDlgHeight = d.Call("getElementById", "docDialogHeight")
+	a.docDlgFps = d.Call("getElementById", "docDialogFps")
+	a.docDlgBg = d.Call("getElementById", "docDialogBg")
+	a.docDlgCancel = d.Call("getElementById", "docDialogCancel")
+	a.docDlgSave = d.Call("getElementById", "docDialogSave")
 
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
+	a.updateAutoKeyUI()
 }
 
 func (a *App) refreshDocUI() {
 	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
 	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
+	if a.stageCanvas.Truthy() {
+		a.stageCanvas.Get("style").Set("aspectRatio", fmt.Sprintf("%d / %d", a.doc.Width, a.doc.Height))
+	}
 	a.updateSelectedLayerLabel()
+}
+
+func (a *App) updateAutoKeyUI() {
+	if !a.autoKeyBtn.Truthy() {
+		return
+	}
+	if a.autoKey {
+		a.autoKeyBtn.Get("classList").Call("add", "active")
+	} else {
+		a.autoKeyBtn.Get("classList").Call("remove", "active")
+	}
 }
 
 func sanitizeFileName(name string) string {
@@ -521,6 +517,11 @@ func normalizeDocument(doc *Document) {
 	if doc.FPS <= 0 {
 		doc.FPS = 24
 	}
+	if doc.Background == "" {
+		doc.Background = "#808080"
+	} else {
+		doc.Background = normalizeHexColor(doc.Background)
+	}
 	if doc.TotalFrames <= 0 {
 		doc.TotalFrames = 120
 	}
@@ -529,14 +530,6 @@ func normalizeDocument(doc *Document) {
 		layer := &doc.Layers[li]
 		if layer.Color == "" {
 			layer.Color = "#c77dff"
-		}
-		if len(layer.Instances) == 0 {
-			layer.Instances = []ElementInstance{{
-				ID:          fmt.Sprintf("layer-%d-instance-1", li+1),
-				Name:        "Symbol Instance",
-				Description: "Default element instance",
-				Keyframes:   make(map[int]InstanceKeyframe),
-			}}
 		}
 		for ii := range layer.Instances {
 			inst := &layer.Instances[ii]
@@ -846,6 +839,17 @@ func (a *App) setInstanceKeyframe(layerIdx, instIdx, frame int, kf InstanceKeyfr
 	return true
 }
 
+func (a *App) writableTransformKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
+	if kf, ok := a.getExactInstanceKeyframe(layerIdx, instIdx, frame); ok {
+		return kf, true
+	}
+	if !a.autoKey {
+		return InstanceKeyframe{}, false
+	}
+	a.addKeyframe(layerIdx, instIdx, frame)
+	return a.getExactInstanceKeyframe(layerIdx, instIdx, frame)
+}
+
 func (a *App) clearInstanceSelection() {
 	a.selectedLayerIdx = -1
 	a.selectedInstIdx = -1
@@ -860,6 +864,104 @@ func (a *App) clearTweenSelection() {
 	a.selectedTweenInstIdx = -1
 	a.selectedTweenStartFrame = -1
 	a.selectedTweenEndFrame = -1
+}
+
+func (a *App) closeLayerContextMenu() {
+	if a.layerCtxMenu.Truthy() {
+		a.layerCtxMenu.Get("classList").Call("remove", "open")
+	}
+	a.layerCtxTargetIdx = -1
+}
+
+func (a *App) openLayerContextMenu(layerIdx int, clientX, clientY float64) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || !a.layerCtxMenu.Truthy() {
+		return
+	}
+	a.layerCtxTargetIdx = layerIdx
+	a.layerCtxMenu.Get("style").Set("left", fmt.Sprintf("%.0fpx", clientX))
+	a.layerCtxMenu.Get("style").Set("top", fmt.Sprintf("%.0fpx", clientY))
+	a.layerCtxMenu.Get("classList").Call("add", "open")
+}
+
+func (a *App) renameLayer(layerIdx int) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return
+	}
+	current := a.doc.Layers[layerIdx].Name
+	next := js.Global().Call("prompt", "Rename layer", current)
+	if !next.Truthy() {
+		return
+	}
+	name := strings.TrimSpace(next.String())
+	if name == "" || name == current {
+		return
+	}
+	a.doc.Layers[layerIdx].Name = name
+	a.updateSelectedLayerLabel()
+	a.statusEl.Set("textContent", "Layer renamed")
+}
+
+func (a *App) closeDocumentDialog() {
+	if a.docDialog.Truthy() {
+		a.docDialog.Get("classList").Call("remove", "open")
+	}
+}
+
+func (a *App) openDocumentDialog() {
+	if !a.docDialog.Truthy() {
+		return
+	}
+	a.docDlgWidth.Set("value", fmt.Sprintf("%d", a.doc.Width))
+	a.docDlgHeight.Set("value", fmt.Sprintf("%d", a.doc.Height))
+	a.docDlgFps.Set("value", fmt.Sprintf("%d", a.doc.FPS))
+	a.docDlgBg.Set("value", normalizeHexColor(a.doc.Background))
+	a.docDialog.Get("classList").Call("add", "open")
+	a.docDlgWidth.Call("focus")
+}
+
+func (a *App) submitDocumentDialog() {
+	parseInt := func(input js.Value, min int) (int, bool) {
+		v := int(input.Get("valueAsNumber").Float())
+		if v >= min {
+			return v, true
+		}
+		s := strings.TrimSpace(input.Get("value").String())
+		n, err := strconv.Atoi(s)
+		if err != nil || n < min {
+			return 0, false
+		}
+		return n, true
+	}
+
+	width, ok := parseInt(a.docDlgWidth, 1)
+	if !ok {
+		a.statusEl.Set("textContent", "Document width must be at least 1")
+		return
+	}
+	height, ok := parseInt(a.docDlgHeight, 1)
+	if !ok {
+		a.statusEl.Set("textContent", "Document height must be at least 1")
+		return
+	}
+	fps, ok := parseInt(a.docDlgFps, 1)
+	if !ok {
+		a.statusEl.Set("textContent", "Document FPS must be at least 1")
+		return
+	}
+	bg := strings.TrimSpace(a.docDlgBg.Get("value").String())
+	if bg == "" {
+		a.statusEl.Set("textContent", "Document background color is required")
+		return
+	}
+
+	a.doc.Width = width
+	a.doc.Height = height
+	a.doc.FPS = fps
+	a.doc.Background = normalizeHexColor(bg)
+	a.refreshDocUI()
+	a.resizeCanvases()
+	a.closeDocumentDialog()
+	a.statusEl.Set("textContent", "Document modified")
 }
 
 func selKey(layerIdx, instIdx int) string {
@@ -1054,7 +1156,7 @@ func normalizeHexColor(s string) string {
 func (a *App) applyTransformField(field string, value float64) {
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame)
+		kf, ok := a.writableTransformKeyframe(li, ii, a.curFrame)
 		if !ok {
 			continue
 		}
@@ -1154,7 +1256,7 @@ func (a *App) applyShapeNumeric(field string, value float64) {
 func (a *App) applyRotationDelta(deltaRad float64) {
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame)
+		kf, ok := a.writableTransformKeyframe(li, ii, a.curFrame)
 		if !ok {
 			continue
 		}
@@ -1218,7 +1320,7 @@ func (a *App) updatePropertiesPanel() {
 	kf, exact := a.getExactInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
 	for _, c := range transformControls {
 		if c.Truthy() {
-			c.Set("disabled", !exact)
+			c.Set("disabled", !exact && !a.autoKey)
 		}
 	}
 	if exact {
@@ -1544,6 +1646,7 @@ func (a *App) loadDocumentJSONText(text string) error {
 	}
 	normalizeDocument(&doc)
 	a.doc = doc
+	a.clearInstanceSelection()
 	a.setFrame(a.curFrame)
 	a.refreshDocUI()
 	a.renderAll()
@@ -1723,6 +1826,38 @@ func (a *App) bindUI() {
 	a.holdCallback(easeDirCb)
 	a.propEaseMode.Call("addEventListener", "change", easeModeCb)
 	a.propEaseDir.Call("addEventListener", "change", easeDirCb)
+	docDlgCancelCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.closeDocumentDialog()
+		return nil
+	})
+	docDlgSaveCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.submitDocumentDialog()
+		return nil
+	})
+	docDlgOverlayCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 && args[0].Get("target").Equal(a.docDialog) {
+			a.closeDocumentDialog()
+		}
+		return nil
+	})
+	a.holdCallback(docDlgCancelCb)
+	a.holdCallback(docDlgSaveCb)
+	a.holdCallback(docDlgOverlayCb)
+	a.docDlgCancel.Call("addEventListener", "click", docDlgCancelCb)
+	a.docDlgSave.Call("addEventListener", "click", docDlgSaveCb)
+	a.docDialog.Call("addEventListener", "click", docDlgOverlayCb)
+	layerRenameCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			args[0].Call("preventDefault")
+			args[0].Call("stopPropagation")
+		}
+		target := a.layerCtxTargetIdx
+		a.closeLayerContextMenu()
+		a.renameLayer(target)
+		return nil
+	})
+	a.holdCallback(layerRenameCb)
+	js.Global().Get("document").Call("getElementById", "ctx-rename-layer").Call("addEventListener", "click", layerRenameCb)
 	rotDecCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applyRotationDelta(-5 * math.Pi / 180)
 		return nil
@@ -1757,6 +1892,18 @@ func (a *App) bindUI() {
 			return nil
 		}),
 	)
+	d.Call("getElementById", "btn-autokey").Call("addEventListener", "click",
+		js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.autoKey = !a.autoKey
+			a.updateAutoKeyUI()
+			if a.autoKey {
+				a.statusEl.Set("textContent", "Auto Key enabled")
+			} else {
+				a.statusEl.Set("textContent", "Auto Key disabled")
+			}
+			return nil
+		}),
+	)
 
 	d.Call("getElementById", "btn-add-keyframe").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -1777,13 +1924,9 @@ func (a *App) bindUI() {
 				Description: fmt.Sprintf("User created layer %d", n),
 				Color:       "#c77dff",
 				Selected:    true,
-				Instances: []ElementInstance{{
-					ID:          fmt.Sprintf("layer-%d-instance-1", n),
-					Name:        "Symbol Instance",
-					Description: "Default element instance",
-					Keyframes:   make(map[int]InstanceKeyframe),
-				}},
+				Instances:   []ElementInstance{},
 			}}, a.doc.Layers...)
+			a.clearInstanceSelection()
 			a.updateSelectedLayerLabel()
 			return nil
 		}),
@@ -1791,7 +1934,13 @@ func (a *App) bindUI() {
 
 	// window resize
 	w.Call("addEventListener", "resize", js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.closeLayerContextMenu()
 		a.resizeCanvases()
+		return nil
+	}))
+
+	d.Call("addEventListener", "click", js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.closeLayerContextMenu()
 		return nil
 	}))
 
@@ -1799,6 +1948,19 @@ func (a *App) bindUI() {
 	d.Call("addEventListener", "keydown", js.FuncOf(func(this js.Value, args []js.Value) any {
 		e := args[0]
 		key := e.Get("key").String()
+		a.closeLayerContextMenu()
+		if a.docDialog.Truthy() && a.docDialog.Get("classList").Call("contains", "open").Bool() {
+			if key == "Escape" {
+				e.Call("preventDefault")
+				a.closeDocumentDialog()
+				return nil
+			}
+			if key == "Enter" {
+				e.Call("preventDefault")
+				a.submitDocumentDialog()
+				return nil
+			}
+		}
 		if key == " " {
 			e.Call("preventDefault")
 			a.playing = !a.playing
@@ -1822,10 +1984,32 @@ func (a *App) bindUI() {
 	}))
 
 	// timeline mouse events
+	a.tlCanvas.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) any {
+		e := args[0]
+		x := e.Get("offsetX").Float()
+		y := e.Get("offsetY").Float()
+		a.closeLayerContextMenu()
+		if x > a.headerW {
+			return nil
+		}
+		rowTop := 14.0
+		if y < rowTop {
+			return nil
+		}
+		layerIdx := int((y - rowTop) / a.layerH)
+		if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+			return nil
+		}
+		e.Call("preventDefault")
+		e.Call("stopPropagation")
+		a.openLayerContextMenu(layerIdx, e.Get("clientX").Float(), e.Get("clientY").Float())
+		return nil
+	}))
 	a.tlCanvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
 		e := args[0]
 		x := e.Get("offsetX").Float()
 		y := e.Get("offsetY").Float()
+		a.closeLayerContextMenu()
 
 		phX := a.frameToX(a.curFrame)
 		if math.Abs(x-phX) < 8 && y > 0 {
@@ -2061,7 +2245,7 @@ func (a *App) bindUI() {
 			dy := y - a.lastMouseY
 			for _, pair := range a.selectedInstancePairs() {
 				li, ii := pair[0], pair[1]
-				if kf, ok := a.getExactInstanceKeyframe(li, ii, a.curFrame); ok {
+				if kf, ok := a.writableTransformKeyframe(li, ii, a.curFrame); ok {
 					switch a.dragMode {
 					case "move":
 						kf.X += dx
@@ -2337,8 +2521,6 @@ func (a *App) tick() {
 		a.playAccum -= 1
 	}
 
-	// demo stage movement tied to frame
-	a.foxX = 120 + float64(a.curFrame)*3.0
 }
 
 func (a *App) setFrame(f int) {
@@ -2378,31 +2560,8 @@ func (a *App) renderStage() {
 	h := a.stageCanvas.Get("height").Float() / js.Global().Get("devicePixelRatio").Float()
 
 	// background
-	ctx.Set("fillStyle", "#86c5ff")
+	ctx.Set("fillStyle", a.doc.Background)
 	ctx.Call("fillRect", 0, 0, w, h)
-
-	// hills
-	ctx.Set("fillStyle", "#57a773")
-	ctx.Call("fillRect", 0, h*0.72, w, h*0.28)
-	ctx.Set("fillStyle", "#3f7f57")
-	ctx.Call("fillRect", 0, h*0.82, w, h*0.18)
-
-	// simple sun
-	ctx.Set("fillStyle", "#ffd166")
-	ctx.Call("beginPath")
-	ctx.Call("arc", w*0.82, h*0.22, 28, 0, math.Pi*2)
-	ctx.Call("fill")
-
-	// "fox" placeholder
-	x := math.Mod(a.foxX, w+60) - 30
-	y := h * 0.65
-
-	ctx.Set("fillStyle", "#ff5a5f")
-	ctx.Call("fillRect", x-18, y-22, 36, 24) // body
-	ctx.Set("fillStyle", "#111")
-	ctx.Call("fillRect", x+6, y-18, 4, 4) // eye
-	ctx.Set("fillStyle", "#fff")
-	ctx.Call("fillRect", x+14, y-10, 10, 6) // snout highlight
 
 	// draw shape instances
 	for li := range a.doc.Layers {
@@ -2832,6 +2991,7 @@ func (a *App) handleMenuAction(action string) {
 
 	case "file.new":
 		a.doc = newDefaultDocument()
+		a.clearInstanceSelection()
 		a.setFrame(1)
 		a.playing = false
 		a.refreshDocUI()
@@ -2892,13 +3052,9 @@ func (a *App) handleMenuAction(action string) {
 			Description: fmt.Sprintf("User created layer %d", n),
 			Color:       "#c77dff",
 			Selected:    true,
-			Instances: []ElementInstance{{
-				ID:          fmt.Sprintf("layer-%d-instance-1", n),
-				Name:        "Symbol Instance",
-				Description: "Default element instance",
-				Keyframes:   make(map[int]InstanceKeyframe),
-			}},
+			Instances:   []ElementInstance{},
 		}}, a.doc.Layers...)
+		a.clearInstanceSelection()
 		a.updateSelectedLayerLabel()
 		a.statusEl.Set("textContent", "Layer added")
 
@@ -2913,6 +3069,9 @@ func (a *App) handleMenuAction(action string) {
 
 	case "modify.breakApart":
 		a.statusEl.Set("textContent", "Break Apart requested")
+
+	case "modify.document":
+		a.openDocumentDialog()
 
 	case "text.bold":
 		a.statusEl.Set("textContent", "Bold requested")
