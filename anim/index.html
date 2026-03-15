@@ -135,10 +135,10 @@
 
       <div class="rightPanel">
         <div class="tabs">
-          <div class="tab active">Properties</div>
-          <div class="tab">Library</div>
+          <div class="tab active" data-panel="properties">Properties</div>
+          <div class="tab" data-panel="library">Library</div>
         </div>
-        <div class="panelBody">
+        <div id="propertiesPanel" class="panelBody active">
           <div class="groupTitle">Document</div>
           <div class="row"><div class="label">Size</div><div id="docSize" class="value">&mdash;</div></div>
           <div class="row"><div class="label">FPS</div><div id="docFps" class="value">24</div></div>
@@ -165,6 +165,10 @@
           <div class="row"><div class="label">Frame</div><div id="curFrame" class="value">1</div></div>
           <div class="row"><div class="label">Playing</div><div id="isPlaying" class="value">No</div></div>
           <div class="hint">Tip: Drag the playhead in the timeline. Press Space to play/pause.</div>
+        </div>
+        <div id="libraryPanel" class="panelBody">
+          <div class="groupTitle">Symbols</div>
+          <div id="libraryList" class="libraryList"></div>
         </div>
       </div>
     </div>

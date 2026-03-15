@@ -29,6 +29,13 @@ type ElementInstance struct {
 	Keyframes   map[int]InstanceKeyframe `json:"keyframes"` // frame -> animation data
 }
 
+type Symbol struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	SymbolType string            `json:"symbolType"`
+	Instances  []ElementInstance `json:"instances"`
+}
+
 type InstanceKeyframe struct {
 	Frame    int     `json:"frame"`
 	X        float64 `json:"x"`
@@ -82,6 +89,7 @@ type Document struct {
 	Background  string         `json:"background"`
 	TotalFrames int            `json:"totalFrames"`
 	Layers      []Layer        `json:"layers"`
+	Symbols     []Symbol       `json:"symbols"`
 	Circles     []VectorCircle `json:"circles"`
 	Paths       []VectorPath   `json:"paths"`
 }
@@ -103,6 +111,7 @@ func newDefaultDocument() Document {
 				Instances:   []ElementInstance{},
 			},
 		},
+		Symbols: []Symbol{},
 		Circles: []VectorCircle{},
 		Paths:   []VectorPath{},
 	}
@@ -290,38 +299,41 @@ type App struct {
 	tlCanvas js.Value
 	tlCtx    js.Value
 
-	statusEl     js.Value
-	docSizeEl    js.Value
-	docFpsEl     js.Value
-	curFrameEl   js.Value
-	isPlayEl     js.Value
-	selNameEl    js.Value
-	selToolEl    js.Value
-	propPosX     js.Value
-	propPosY     js.Value
-	propScaleX   js.Value
-	propScaleY   js.Value
-	propSkewX    js.Value
-	propSkewY    js.Value
-	propRot      js.Value
-	propRotDec   js.Value
-	propRotInc   js.Value
-	propAncX     js.Value
-	propAncY     js.Value
-	propFill     js.Value
-	propStroke   js.Value
-	propStrokeW  js.Value
-	propEaseMode js.Value
-	propEaseDir  js.Value
-	layerCtxMenu js.Value
-	autoKeyBtn   js.Value
-	docDialog    js.Value
-	docDlgWidth  js.Value
-	docDlgHeight js.Value
-	docDlgFps    js.Value
-	docDlgBg     js.Value
-	docDlgCancel js.Value
-	docDlgSave   js.Value
+	statusEl          js.Value
+	docSizeEl         js.Value
+	docFpsEl          js.Value
+	curFrameEl        js.Value
+	isPlayEl          js.Value
+	selNameEl         js.Value
+	selToolEl         js.Value
+	libraryListEl     js.Value
+	propertiesPanelEl js.Value
+	libraryPanelEl    js.Value
+	propPosX          js.Value
+	propPosY          js.Value
+	propScaleX        js.Value
+	propScaleY        js.Value
+	propSkewX         js.Value
+	propSkewY         js.Value
+	propRot           js.Value
+	propRotDec        js.Value
+	propRotInc        js.Value
+	propAncX          js.Value
+	propAncY          js.Value
+	propFill          js.Value
+	propStroke        js.Value
+	propStrokeW       js.Value
+	propEaseMode      js.Value
+	propEaseDir       js.Value
+	layerCtxMenu      js.Value
+	autoKeyBtn        js.Value
+	docDialog         js.Value
+	docDlgWidth       js.Value
+	docDlgHeight      js.Value
+	docDlgFps         js.Value
+	docDlgBg          js.Value
+	docDlgCancel      js.Value
+	docDlgSave        js.Value
 
 	// timeline state
 	curFrame int // 1-based
@@ -361,6 +373,13 @@ type App struct {
 	selectedTweenStartFrame int
 	selectedTweenEndFrame   int
 	layerCtxTargetIdx       int
+	selectedLibrarySymbolID string
+	dragLibrarySymbolID     string
+	dragLibraryClientX      float64
+	dragLibraryClientY      float64
+	dragLibraryStageX       float64
+	dragLibraryStageY       float64
+	dragLibraryOverStage    bool
 	dragMode                string
 	lastMouseX              float64
 	lastMouseY              float64
@@ -433,6 +452,9 @@ func (a *App) initDOM() {
 	a.isPlayEl = d.Call("getElementById", "isPlaying")
 	a.selNameEl = d.Call("getElementById", "selName")
 	a.selToolEl = d.Call("getElementById", "selTool")
+	a.libraryListEl = d.Call("getElementById", "libraryList")
+	a.propertiesPanelEl = d.Call("getElementById", "propertiesPanel")
+	a.libraryPanelEl = d.Call("getElementById", "libraryPanel")
 	a.propPosX = d.Call("getElementById", "propPosX")
 	a.propPosY = d.Call("getElementById", "propPosY")
 	a.propScaleX = d.Call("getElementById", "propScaleX")
@@ -471,6 +493,7 @@ func (a *App) refreshDocUI() {
 		a.stageCanvas.Get("style").Set("aspectRatio", fmt.Sprintf("%d / %d", a.doc.Width, a.doc.Height))
 	}
 	a.updateSelectedLayerLabel()
+	a.updateLibraryPanel()
 }
 
 func (a *App) updateAutoKeyUI() {
@@ -482,6 +505,155 @@ func (a *App) updateAutoKeyUI() {
 	} else {
 		a.autoKeyBtn.Get("classList").Call("remove", "active")
 	}
+}
+
+func (a *App) setRightPanelTab(name string) {
+	d := js.Global().Get("document")
+	tabs := d.Call("querySelectorAll", ".tab")
+	for i := 0; i < tabs.Length(); i++ {
+		tab := tabs.Index(i)
+		if tab.Get("dataset").Get("panel").String() == name {
+			tab.Get("classList").Call("add", "active")
+		} else {
+			tab.Get("classList").Call("remove", "active")
+		}
+	}
+	if a.propertiesPanelEl.Truthy() {
+		if name == "properties" {
+			a.propertiesPanelEl.Get("classList").Call("add", "active")
+		} else {
+			a.propertiesPanelEl.Get("classList").Call("remove", "active")
+		}
+	}
+	if a.libraryPanelEl.Truthy() {
+		if name == "library" {
+			a.libraryPanelEl.Get("classList").Call("add", "active")
+		} else {
+			a.libraryPanelEl.Get("classList").Call("remove", "active")
+		}
+	}
+}
+
+func (a *App) updateLibraryPanel() {
+	if !a.libraryListEl.Truthy() {
+		return
+	}
+	a.libraryListEl.Set("innerHTML", "")
+	d := js.Global().Get("document")
+	if len(a.doc.Symbols) == 0 {
+		empty := d.Call("createElement", "div")
+		empty.Set("className", "libraryMeta")
+		empty.Set("textContent", "No symbols yet")
+		a.libraryListEl.Call("appendChild", empty)
+		return
+	}
+	for _, sym := range a.doc.Symbols {
+		sym := sym
+		item := d.Call("createElement", "div")
+		item.Set("className", "libraryItem")
+		if sym.ID == a.selectedLibrarySymbolID {
+			item.Get("classList").Call("add", "selected")
+		}
+		item.Get("dataset").Set("symbolId", sym.ID)
+		name := d.Call("createElement", "div")
+		name.Set("className", "libraryName")
+		name.Set("textContent", sym.Name)
+		meta := d.Call("createElement", "div")
+		meta.Set("className", "libraryMeta")
+		meta.Set("textContent", fmt.Sprintf("%s, %d nested instance(s)", strings.Title(sym.SymbolType), len(sym.Instances)))
+		item.Call("appendChild", name)
+		item.Call("appendChild", meta)
+		mouseDownCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) == 0 {
+				return nil
+			}
+			e := args[0]
+			a.selectedLibrarySymbolID = sym.ID
+			a.dragLibrarySymbolID = sym.ID
+			a.dragLibraryClientX = e.Get("clientX").Float()
+			a.dragLibraryClientY = e.Get("clientY").Float()
+			a.dragLibraryOverStage = false
+			a.updateLibraryPanel()
+			return nil
+		})
+		a.holdCallback(mouseDownCb)
+		item.Call("addEventListener", "mousedown", mouseDownCb)
+		a.libraryListEl.Call("appendChild", item)
+	}
+}
+
+func isRenderableInstanceType(inst ElementInstance) bool {
+	return inst.ElementType == "path" || inst.ElementType == "circle" || inst.ElementType == "symbol"
+}
+
+func (a *App) symbolNameByID(id string) string {
+	if sym, ok := a.findSymbolByID(id); ok {
+		return sym.Name
+	}
+	return "Movie Clip"
+}
+
+func (a *App) updateLibraryDragPosition(clientX, clientY float64) {
+	a.dragLibraryClientX = clientX
+	a.dragLibraryClientY = clientY
+	a.dragLibraryOverStage = false
+	if !a.stageCanvas.Truthy() || a.dragLibrarySymbolID == "" {
+		return
+	}
+	rect := a.stageCanvas.Call("getBoundingClientRect")
+	left := rect.Get("left").Float()
+	top := rect.Get("top").Float()
+	width := rect.Get("width").Float()
+	height := rect.Get("height").Float()
+	stageX := clientX - left
+	stageY := clientY - top
+	if stageX >= 0 && stageX <= width && stageY >= 0 && stageY <= height {
+		a.dragLibraryOverStage = true
+		a.dragLibraryStageX = stageX
+		a.dragLibraryStageY = stageY
+	}
+}
+
+func (a *App) clearLibraryDrag() {
+	a.dragLibrarySymbolID = ""
+	a.dragLibraryOverStage = false
+}
+
+func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
+	sym, ok := a.findSymbolByID(symbolID)
+	if !ok {
+		return
+	}
+	for i := range a.doc.Layers {
+		a.doc.Layers[i].Selected = false
+	}
+	layerIdx := 0
+	layerName := sym.Name
+	layer := Layer{
+		Name:        layerName,
+		Description: "Layer created from Library symbol",
+		Color:       "#c77dff",
+		Selected:    true,
+		Instances:   []ElementInstance{},
+	}
+	kf := defaultKeyframeAt(a.curFrame)
+	kf.X = x
+	kf.Y = y
+	inst := ElementInstance{
+		ID:          fmt.Sprintf("layer-%d-symbol-instance-1", len(a.doc.Layers)+1),
+		Name:        sym.Name,
+		Description: "Symbol instance from Library",
+		ElementType: "symbol",
+		ElementID:   symbolID,
+		Keyframes:   map[int]InstanceKeyframe{a.curFrame: kf},
+	}
+	layer.Instances = append(layer.Instances, inst)
+	a.doc.Layers = append([]Layer{layer}, a.doc.Layers...)
+	a.setSingleInstanceSelection(layerIdx, 0)
+	a.selectedLibrarySymbolID = symbolID
+	a.updateSelectedLayerLabel()
+	a.updateLibraryPanel()
+	a.statusEl.Set("textContent", "Symbol placed on new layer")
 }
 
 func sanitizeFileName(name string) string {
@@ -543,6 +715,57 @@ func normalizeDocument(doc *Document) {
 				inst.Keyframes = make(map[int]InstanceKeyframe)
 			}
 
+			for frame, kf := range inst.Keyframes {
+				if frame < 1 || frame > doc.TotalFrames {
+					delete(inst.Keyframes, frame)
+					continue
+				}
+				if kf.Frame == 0 {
+					kf.Frame = frame
+				}
+				if kf.ScaleX == 0 {
+					kf.ScaleX = 1
+				}
+				if kf.ScaleY == 0 {
+					kf.ScaleY = 1
+				}
+				if kf.Opacity < 0 || kf.Opacity > 1 {
+					kf.Opacity = 1
+				}
+				kf.EaseMode = normalizeEaseMode(kf.EaseMode)
+				kf.EaseDir = normalizeEaseDir(kf.EaseDir)
+				inst.Keyframes[frame] = kf
+			}
+		}
+	}
+	if doc.Symbols == nil {
+		doc.Symbols = []Symbol{}
+	}
+	for si := range doc.Symbols {
+		sym := &doc.Symbols[si]
+		if sym.ID == "" {
+			sym.ID = fmt.Sprintf("symbol-%d", si+1)
+		}
+		if sym.Name == "" {
+			sym.Name = fmt.Sprintf("Movie Clip %d", si+1)
+		}
+		if sym.SymbolType == "" {
+			sym.SymbolType = "movieclip"
+		}
+		if sym.Instances == nil {
+			sym.Instances = []ElementInstance{}
+		}
+		for ii := range sym.Instances {
+			inst := &sym.Instances[ii]
+			if inst.ID == "" {
+				inst.ID = fmt.Sprintf("%s-instance-%d", sym.ID, ii+1)
+			}
+			if inst.Name == "" {
+				inst.Name = "Symbol Instance"
+			}
+			if inst.Keyframes == nil {
+				inst.Keyframes = make(map[int]InstanceKeyframe)
+			}
 			for frame, kf := range inst.Keyframes {
 				if frame < 1 || frame > doc.TotalFrames {
 					delete(inst.Keyframes, frame)
@@ -629,6 +852,10 @@ func normalizeDocument(doc *Document) {
 
 func (a *App) nextCircleID() string {
 	return fmt.Sprintf("circle-%d", len(a.doc.Circles)+1)
+}
+
+func (a *App) nextSymbolID() string {
+	return fmt.Sprintf("symbol-%d", len(a.doc.Symbols)+1)
 }
 
 func (a *App) nextPathID() string {
@@ -724,15 +951,7 @@ func (a *App) addCircleInstanceToSelectedLayers(circleID string, baseKeyframe In
 	}
 }
 
-func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
-		return InstanceKeyframe{}, false
-	}
-	layer := a.doc.Layers[layerIdx]
-	if instIdx < 0 || instIdx >= len(layer.Instances) {
-		return InstanceKeyframe{}, false
-	}
-	inst := layer.Instances[instIdx]
+func resolveElementInstanceKeyframe(inst ElementInstance, frame int, totalFrames int) (InstanceKeyframe, bool) {
 	if exact, ok := inst.Keyframes[frame]; ok {
 		exact.Frame = frame
 		exact.EaseMode = normalizeEaseMode(exact.EaseMode)
@@ -742,7 +961,7 @@ func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyfram
 	prevFound := false
 	nextFound := false
 	best := -1
-	next := a.doc.TotalFrames + 1
+	next := totalFrames + 1
 	for f := range inst.Keyframes {
 		if f <= frame && f > best {
 			best = f
@@ -793,6 +1012,17 @@ func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyfram
 		EaseDir:  prev.EaseDir,
 	}
 	return kf, true
+}
+
+func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return InstanceKeyframe{}, false
+	}
+	layer := a.doc.Layers[layerIdx]
+	if instIdx < 0 || instIdx >= len(layer.Instances) {
+		return InstanceKeyframe{}, false
+	}
+	return resolveElementInstanceKeyframe(layer.Instances[instIdx], frame, a.doc.TotalFrames)
 }
 
 func (a *App) getOrCreateInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
@@ -1014,6 +1244,52 @@ func (a *App) setPrimarySelection(layerIdx, instIdx int) {
 	}
 }
 
+func (a *App) convertSelectedInstanceToSymbol() {
+	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(a.doc.Layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(a.doc.Layers[a.selectedLayerIdx].Instances) {
+		a.statusEl.Set("textContent", "Select an instance to convert to a symbol")
+		return
+	}
+	layer := &a.doc.Layers[a.selectedLayerIdx]
+	original := cloneInstance(layer.Instances[a.selectedInstIdx])
+	if !isRenderableInstanceType(original) {
+		a.statusEl.Set("textContent", "Only stage instances can be converted to a symbol")
+		return
+	}
+
+	symbolID := a.nextSymbolID()
+	symbolName := fmt.Sprintf("Movie Clip %d", len(a.doc.Symbols)+1)
+	nested := cloneInstance(original)
+	nested.ID = symbolID + "-instance-1"
+	if nested.Name == "" {
+		nested.Name = "Nested Instance"
+	}
+	symbol := Symbol{
+		ID:         symbolID,
+		Name:       symbolName,
+		SymbolType: "movieclip",
+		Instances:  []ElementInstance{nested},
+	}
+	a.doc.Symbols = append(a.doc.Symbols, symbol)
+
+	wrapper := ElementInstance{
+		ID:          fmt.Sprintf("%s-wrapper", symbolID),
+		Name:        symbolName,
+		Description: "Movie Clip instance",
+		ElementType: "symbol",
+		ElementID:   symbolID,
+		Keyframes:   make(map[int]InstanceKeyframe, len(original.Keyframes)),
+	}
+	for frame := range original.Keyframes {
+		wrapper.Keyframes[frame] = defaultKeyframeAt(frame)
+	}
+	layer.Instances[a.selectedInstIdx] = wrapper
+	a.setSingleInstanceSelection(a.selectedLayerIdx, a.selectedInstIdx)
+	a.updateSelectedLayerLabel()
+	a.updateLibraryPanel()
+	a.setRightPanelTab("library")
+	a.statusEl.Set("textContent", "Converted selection to Movie Clip symbol")
+}
+
 func (a *App) setSingleInstanceSelection(layerIdx, instIdx int) {
 	a.selectedInstances = make(map[string]bool)
 	a.selectedInstances[selKey(layerIdx, instIdx)] = true
@@ -1124,6 +1400,29 @@ func (a *App) findCircleByID(id string) (VectorCircle, bool) {
 		}
 	}
 	return VectorCircle{}, false
+}
+
+func (a *App) findSymbolByID(id string) (Symbol, bool) {
+	for _, s := range a.doc.Symbols {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return Symbol{}, false
+}
+
+func cloneKeyframes(src map[int]InstanceKeyframe) map[int]InstanceKeyframe {
+	dst := make(map[int]InstanceKeyframe, len(src))
+	for frame, kf := range src {
+		dst[frame] = kf
+	}
+	return dst
+}
+
+func cloneInstance(inst ElementInstance) ElementInstance {
+	copy := inst
+	copy.Keyframes = cloneKeyframes(inst.Keyframes)
+	return copy
 }
 
 func dist(x1, y1, x2, y2 float64) float64 { return math.Hypot(x1-x2, y1-y2) }
@@ -1441,38 +1740,58 @@ func pathLocalBounds(p VectorPath) (float64, float64, float64, float64, bool) {
 	return minX, minY, maxX, maxY, true
 }
 
-func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, float64, float64, bool) {
-	inst := a.doc.Layers[layerIdx].Instances[instIdx]
-	kf, ok := a.getInstanceKeyframe(layerIdx, instIdx, a.curFrame)
+func unionBounds(minX, minY, maxX, maxY float64, ok bool, bx0, by0, bx1, by1 float64) (float64, float64, float64, float64, bool) {
+	if !ok {
+		return bx0, by0, bx1, by1, true
+	}
+	if bx0 < minX {
+		minX = bx0
+	}
+	if by0 < minY {
+		minY = by0
+	}
+	if bx1 > maxX {
+		maxX = bx1
+	}
+	if by1 > maxY {
+		maxY = by1
+	}
+	return minX, minY, maxX, maxY, true
+}
+
+func transformBounds(m mat2d, minX, minY, maxX, maxY float64) (float64, float64, float64, float64) {
+	corners := [][2]float64{{minX, minY}, {maxX, minY}, {maxX, maxY}, {minX, maxY}}
+	x0, y0 := matApply(m, corners[0][0], corners[0][1])
+	outMinX, outMinY, outMaxX, outMaxY := x0, y0, x0, y0
+	for i := 1; i < len(corners); i++ {
+		x, y := matApply(m, corners[i][0], corners[i][1])
+		if x < outMinX {
+			outMinX = x
+		}
+		if y < outMinY {
+			outMinY = y
+		}
+		if x > outMaxX {
+			outMaxX = x
+		}
+		if y > outMaxY {
+			outMaxY = y
+		}
+	}
+	return outMinX, outMinY, outMaxX, outMaxY
+}
+
+func (a *App) instanceBoundsRecursive(inst ElementInstance, frame, depth int) (float64, float64, float64, float64, bool) {
+	if depth > 8 {
+		return 0, 0, 0, 0, false
+	}
+	kf, ok := resolveElementInstanceKeyframe(inst, frame, a.doc.TotalFrames)
 	if !ok {
 		return 0, 0, 0, 0, false
 	}
 	m := instanceMatrix(kf)
-	setBounds := func(pts [][2]float64) (float64, float64, float64, float64, bool) {
-		if len(pts) == 0 {
-			return 0, 0, 0, 0, false
-		}
-		wx, wy := matApply(m, pts[0][0], pts[0][1])
-		minX, minY, maxX, maxY := wx, wy, wx, wy
-		for i := 1; i < len(pts); i++ {
-			x, y := matApply(m, pts[i][0], pts[i][1])
-			if x < minX {
-				minX = x
-			}
-			if y < minY {
-				minY = y
-			}
-			if x > maxX {
-				maxX = x
-			}
-			if y > maxY {
-				maxY = y
-			}
-		}
-		return minX, minY, maxX, maxY, true
-	}
-
-	if inst.ElementType == "path" {
+	switch inst.ElementType {
+	case "path":
 		p, ok := a.findPathByID(inst.ElementID)
 		if !ok {
 			return 0, 0, 0, 0, false
@@ -1481,21 +1800,71 @@ func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, floa
 		if !ok {
 			return 0, 0, 0, 0, false
 		}
-		return setBounds([][2]float64{{minX, minY}, {maxX, minY}, {maxX, maxY}, {minX, maxY}})
-	}
-	if inst.ElementType == "circle" {
+		tx0, ty0, tx1, ty1 := transformBounds(m, minX, minY, maxX, maxY)
+		return tx0, ty0, tx1, ty1, true
+	case "circle":
 		c, ok := a.findCircleByID(inst.ElementID)
 		if !ok {
 			return 0, 0, 0, 0, false
 		}
-		return setBounds([][2]float64{
-			{c.CX - c.Radius, c.CY - c.Radius},
-			{c.CX + c.Radius, c.CY - c.Radius},
-			{c.CX + c.Radius, c.CY + c.Radius},
-			{c.CX - c.Radius, c.CY + c.Radius},
-		})
+		minX, minY, maxX, maxY := transformBounds(m, c.CX-c.Radius, c.CY-c.Radius, c.CX+c.Radius, c.CY+c.Radius)
+		return minX, minY, maxX, maxY, true
+	case "symbol":
+		sym, ok := a.findSymbolByID(inst.ElementID)
+		if !ok {
+			return 0, 0, 0, 0, false
+		}
+		var minX, minY, maxX, maxY float64
+		have := false
+		for _, nested := range sym.Instances {
+			bx0, by0, bx1, by1, ok := a.instanceBoundsRecursive(nested, frame, depth+1)
+			if !ok {
+				continue
+			}
+			tx0, ty0, tx1, ty1 := transformBounds(m, bx0, by0, bx1, by1)
+			minX, minY, maxX, maxY, have = unionBounds(minX, minY, maxX, maxY, have, tx0, ty0, tx1, ty1)
+		}
+		return minX, minY, maxX, maxY, have
 	}
 	return 0, 0, 0, 0, false
+}
+
+func (a *App) drawInstanceRecursive(ctx js.Value, inst ElementInstance, frame, depth int) {
+	if depth > 8 || !isRenderableInstanceType(inst) {
+		return
+	}
+	kf, ok := resolveElementInstanceKeyframe(inst, frame, a.doc.TotalFrames)
+	if !ok {
+		return
+	}
+	ctx.Call("save")
+	m := instanceMatrix(kf)
+	ctx.Call("transform", m.a, m.b, m.c, m.d, m.e, m.f)
+	switch inst.ElementType {
+	case "path":
+		if p, ok := a.findPathByID(inst.ElementID); ok {
+			drawPathLocal(ctx, p)
+		}
+	case "circle":
+		if c, ok := a.findCircleByID(inst.ElementID); ok {
+			drawCircleLocal(ctx, c)
+		}
+	case "symbol":
+		if sym, ok := a.findSymbolByID(inst.ElementID); ok {
+			for _, nested := range sym.Instances {
+				a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+			}
+		}
+	}
+	ctx.Call("restore")
+}
+
+func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, float64, float64, bool) {
+	inst := a.doc.Layers[layerIdx].Instances[instIdx]
+	if !isRenderableInstanceType(inst) {
+		return 0, 0, 0, 0, false
+	}
+	return a.instanceBoundsRecursive(inst, a.curFrame, 0)
 }
 
 func (a *App) pickInstanceAt(x, y float64) (int, int, bool) {
@@ -1503,7 +1872,7 @@ func (a *App) pickInstanceAt(x, y float64) (int, int, bool) {
 		layer := a.doc.Layers[li]
 		for ii := len(layer.Instances) - 1; ii >= 0; ii-- {
 			inst := layer.Instances[ii]
-			if inst.ElementType != "path" && inst.ElementType != "circle" {
+			if !isRenderableInstanceType(inst) {
 				continue
 			}
 			minX, minY, maxX, maxY, ok := a.instanceBoundsWorld(li, ii)
@@ -1751,6 +2120,19 @@ func (a *App) bindUI() {
 		})
 		b.Call("addEventListener", "click", cb)
 	}
+	tabs := d.Call("querySelectorAll", ".tab")
+	for i := 0; i < tabs.Length(); i++ {
+		tab := tabs.Index(i)
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			panel := this.Get("dataset").Get("panel").String()
+			if panel != "" {
+				a.setRightPanelTab(panel)
+			}
+			return nil
+		})
+		a.holdCallback(cb)
+		tab.Call("addEventListener", "click", cb)
+	}
 	// properties panel bindings
 	readNumber := func(this js.Value) (float64, bool) {
 		v := this.Get("valueAsNumber").Float()
@@ -1943,6 +2325,14 @@ func (a *App) bindUI() {
 		a.closeLayerContextMenu()
 		return nil
 	}))
+	d.Call("addEventListener", "mousemove", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if a.dragLibrarySymbolID == "" {
+			return nil
+		}
+		e := args[0]
+		a.updateLibraryDragPosition(e.Get("clientX").Float(), e.Get("clientY").Float())
+		return nil
+	}))
 
 	// keyboard
 	d.Call("addEventListener", "keydown", js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -2011,13 +2401,6 @@ func (a *App) bindUI() {
 		y := e.Get("offsetY").Float()
 		a.closeLayerContextMenu()
 
-		phX := a.frameToX(a.curFrame)
-		if math.Abs(x-phX) < 8 && y > 0 {
-			a.draggingPH = true
-			a.playing = false
-			return nil
-		}
-
 		// click layer header area to select layer (Ctrl/Cmd toggles)
 		if x <= a.headerW {
 			rowTop := 14.0
@@ -2043,6 +2426,8 @@ func (a *App) bindUI() {
 			a.clearTweenSelection()
 			f := a.xToFrame(x)
 			a.setFrame(f)
+			a.draggingPH = true
+			a.playing = false
 		}
 		return nil
 	}))
@@ -2056,6 +2441,14 @@ func (a *App) bindUI() {
 		return nil
 	}))
 	w.Call("addEventListener", "mouseup", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if a.dragLibrarySymbolID != "" {
+			e := args[0]
+			a.updateLibraryDragPosition(e.Get("clientX").Float(), e.Get("clientY").Float())
+			if a.dragLibraryOverStage {
+				a.addSymbolInstanceAsNewLayer(a.dragLibrarySymbolID, a.dragLibraryStageX, a.dragLibraryStageY)
+			}
+			a.clearLibraryDrag()
+		}
 		a.draggingPH = false
 		a.dragMode = ""
 		if a.drawingCircle {
@@ -2364,7 +2757,7 @@ func (a *App) bindUI() {
 			for li := range a.doc.Layers {
 				for ii := range a.doc.Layers[li].Instances {
 					inst := a.doc.Layers[li].Instances[ii]
-					if inst.ElementType != "path" && inst.ElementType != "circle" {
+					if !isRenderableInstanceType(inst) {
 						continue
 					}
 					bx0, by0, bx1, by1, ok := a.instanceBoundsWorld(li, ii)
@@ -2568,27 +2961,7 @@ func (a *App) renderStage() {
 		layer := a.doc.Layers[li]
 		for ii := range layer.Instances {
 			inst := layer.Instances[ii]
-			kf, ok := a.getInstanceKeyframe(li, ii, a.curFrame)
-			if !ok {
-				continue
-			}
-			if inst.ElementType != "path" && inst.ElementType != "circle" {
-				continue
-			}
-			ctx.Call("save")
-			m := instanceMatrix(kf)
-			ctx.Call("transform", m.a, m.b, m.c, m.d, m.e, m.f)
-			if inst.ElementType == "path" {
-				if p, ok := a.findPathByID(inst.ElementID); ok {
-					drawPathLocal(ctx, p)
-				}
-			}
-			if inst.ElementType == "circle" {
-				if c, ok := a.findCircleByID(inst.ElementID); ok {
-					drawCircleLocal(ctx, c)
-				}
-			}
-			ctx.Call("restore")
+			a.drawInstanceRecursive(ctx, inst, a.curFrame, 0)
 		}
 	}
 
@@ -2688,6 +3061,18 @@ func (a *App) renderStage() {
 			ctx.Call("arc", h[0], h[1], 5, 0, math.Pi*2)
 			ctx.Call("fill")
 		}
+	}
+
+	if a.dragLibrarySymbolID != "" && a.dragLibraryOverStage {
+		name := a.symbolNameByID(a.dragLibrarySymbolID)
+		ctx.Set("fillStyle", "rgba(255, 204, 102, 0.18)")
+		ctx.Call("fillRect", a.dragLibraryStageX-40, a.dragLibraryStageY-20, 80, 40)
+		ctx.Set("strokeStyle", "rgba(255, 204, 102, 0.95)")
+		ctx.Set("lineWidth", 1.5)
+		ctx.Call("strokeRect", a.dragLibraryStageX-40, a.dragLibraryStageY-20, 80, 40)
+		ctx.Set("fillStyle", "rgba(255,255,255,0.95)")
+		ctx.Set("font", "12px system-ui")
+		ctx.Call("fillText", name, a.dragLibraryStageX-34, a.dragLibraryStageY+4)
 	}
 
 	// marquee selection rectangle
@@ -3065,7 +3450,7 @@ func (a *App) handleMenuAction(action string) {
 		a.addKeyframeForSelectedInstances()
 
 	case "modify.convertToSymbol":
-		a.statusEl.Set("textContent", "Convert to Symbol requested")
+		a.convertSelectedInstanceToSymbol()
 
 	case "modify.breakApart":
 		a.statusEl.Set("textContent", "Break Apart requested")
@@ -3097,10 +3482,12 @@ func (a *App) handleMenuAction(action string) {
 		a.statusEl.Set("textContent", "Rewound to frame 1")
 
 	case "window.properties":
-		a.statusEl.Set("textContent", "Properties panel hook clicked")
+		a.setRightPanelTab("properties")
+		a.statusEl.Set("textContent", "Properties panel opened")
 
 	case "window.library":
-		a.statusEl.Set("textContent", "Library panel hook clicked")
+		a.setRightPanelTab("library")
+		a.statusEl.Set("textContent", "Library panel opened")
 
 	case "help.about":
 		js.Global().Call("alert", "Animate-like Editor\nBuilt with Go + WASM")

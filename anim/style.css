@@ -215,14 +215,19 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   flex:0 0 auto;
 }
 .tab{ padding:10px; color:var(--muted); border-right:1px solid var(--line); }
+.tab{ cursor:pointer; }
 .tab.active{ color:var(--text); background:var(--panel2); }
 .panelBody{
+  display:none;
   flex:1 1 auto;
   min-height:0;
   overflow-y:auto;
   overflow-x:hidden;
   padding:10px;
   scrollbar-gutter:stable;
+}
+.panelBody.active{
+  display:block;
 }
 .groupTitle{ margin:10px 0 6px; color:var(--muted); font-size:12px; }
 .row{ display:flex; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
@@ -254,6 +259,33 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   cursor:pointer;
 }
 .hint{ margin-top:10px; color:var(--muted); font-size:12px; }
+.libraryList{
+  display:grid;
+  gap:8px;
+}
+.libraryItem{
+  padding:10px;
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:10px;
+  background:#1c1e21;
+  cursor:grab;
+}
+.libraryItem.selected{
+  border-color:var(--accent);
+  box-shadow:0 0 0 1px rgba(255,204,102,.35) inset;
+}
+.libraryItem:active{
+  cursor:grabbing;
+}
+.libraryName{
+  color:var(--text);
+  font-weight:600;
+}
+.libraryMeta{
+  margin-top:4px;
+  color:var(--muted);
+  font-size:12px;
+}
 
 .timeline{
   height:220px; background:var(--panel); border-top:1px solid var(--line);
