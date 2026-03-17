@@ -281,6 +281,16 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   color:var(--text);
   font-weight:600;
 }
+.libraryRenameInput{
+  width:100%;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:6px;
+  background:#111316;
+  color:var(--text);
+  font:inherit;
+  padding:5px 7px;
+  box-sizing:border-box;
+}
 .libraryMeta{
   margin-top:4px;
   color:var(--muted);

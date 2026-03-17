@@ -145,6 +145,7 @@
 
           <div class="groupTitle">Object</div>
           <div class="row"><div class="label">Selected</div><div id="selName" class="value">None</div></div>
+          <div class="row"><div class="label">Name</div><div class="value"><input id="propName" class="propInput" type="text" /></div></div>
           <div class="row"><div class="label">Tool</div><div id="selTool" class="value">Selection</div></div>
           <div class="row"><div class="label">Pos X</div><div class="value"><input id="propPosX" class="propInput" type="number" step="1" /></div></div>
           <div class="row"><div class="label">Pos Y</div><div class="value"><input id="propPosY" class="propInput" type="number" step="1" /></div></div>
@@ -189,6 +190,12 @@
 
   <div id="layerContextMenu" class="dropdown contextMenu">
     <button id="ctx-rename-layer" class="menuItem" type="button">Rename Layer</button>
+    <button id="ctx-delete-layer" class="menuItem" type="button">Delete Layer</button>
+  </div>
+
+  <div id="stageContextMenu" class="dropdown contextMenu">
+    <button id="ctx-convert-to-symbol" class="menuItem" type="button">Convert to Symbol</button>
+    <button id="ctx-delete-instance" class="menuItem" type="button">Delete Instance</button>
   </div>
 
   <div id="docDialog" class="modalOverlay">
