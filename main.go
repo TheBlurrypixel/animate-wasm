@@ -94,6 +94,19 @@ type Document struct {
 	Paths       []VectorPath   `json:"paths"`
 }
 
+type appSnapshot struct {
+	Doc                     Document
+	CurFrame                int
+	SelectedLayerIdx        int
+	SelectedInstIdx         int
+	SelectedInstances       map[string]bool
+	SelectedTweenLayerIdx   int
+	SelectedTweenInstIdx    int
+	SelectedTweenStartFrame int
+	SelectedTweenEndFrame   int
+	SelectedLibrarySymbolID string
+}
+
 func newDefaultDocument() Document {
 	doc := Document{
 		Name:        "scene-1",
@@ -328,6 +341,7 @@ type App struct {
 	propEaseDir       js.Value
 	layerCtxMenu      js.Value
 	stageCtxMenu      js.Value
+	keyframeCtxMenu   js.Value
 	autoKeyBtn        js.Value
 	docDialog         js.Value
 	docDlgWidth       js.Value
@@ -336,11 +350,16 @@ type App struct {
 	docDlgBg          js.Value
 	docDlgCancel      js.Value
 	docDlgSave        js.Value
+	settingsDialog    js.Value
+	settingsMaxUndo   js.Value
+	settingsDlgCancel js.Value
+	settingsDlgSave   js.Value
 
 	// timeline state
-	curFrame int // 1-based
-	playing  bool
-	autoKey  bool
+	curFrame       int // 1-based
+	playing        bool
+	autoKey        bool
+	maxUndoChanges int
 
 	zoom       float64 // pixels per frame
 	layerH     float64
@@ -377,6 +396,8 @@ type App struct {
 	layerCtxTargetIdx       int
 	stageCtxLayerIdx        int
 	stageCtxInstIdx         int
+	keyframeCtxLayerIdx     int
+	keyframeCtxFrame        int
 	selectedLibrarySymbolID string
 	dragLibrarySymbolID     string
 	dragLibraryClientX      float64
@@ -393,6 +414,10 @@ type App struct {
 	marqueeNowX             float64
 	marqueeNowY             float64
 	marqueeAdditive         bool
+	undoStack               []appSnapshot
+	redoStack               []appSnapshot
+	historyBatchOpen        bool
+	suspendHistory          bool
 
 	heldCallbacks []js.Func
 }
@@ -402,12 +427,160 @@ func (a *App) holdCallback(fn js.Func) js.Func {
 	return fn
 }
 
+func cloneDocument(doc Document) Document {
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return doc
+	}
+	var copy Document
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return doc
+	}
+	return copy
+}
+
+func cloneSelectionMap(src map[string]bool) map[string]bool {
+	if src == nil {
+		return map[string]bool{}
+	}
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		if v {
+			dst[k] = true
+		}
+	}
+	return dst
+}
+
+func (a *App) makeSnapshot() appSnapshot {
+	return appSnapshot{
+		Doc:                     cloneDocument(a.doc),
+		CurFrame:                a.curFrame,
+		SelectedLayerIdx:        a.selectedLayerIdx,
+		SelectedInstIdx:         a.selectedInstIdx,
+		SelectedInstances:       cloneSelectionMap(a.selectedInstances),
+		SelectedTweenLayerIdx:   a.selectedTweenLayerIdx,
+		SelectedTweenInstIdx:    a.selectedTweenInstIdx,
+		SelectedTweenStartFrame: a.selectedTweenStartFrame,
+		SelectedTweenEndFrame:   a.selectedTweenEndFrame,
+		SelectedLibrarySymbolID: a.selectedLibrarySymbolID,
+	}
+}
+
+func (a *App) trimUndoStack() {
+	if a.maxUndoChanges < 1 {
+		a.maxUndoChanges = 1
+	}
+	if len(a.undoStack) > a.maxUndoChanges {
+		a.undoStack = append([]appSnapshot(nil), a.undoStack[len(a.undoStack)-a.maxUndoChanges:]...)
+	}
+}
+
+func (a *App) captureUndoSnapshot() {
+	if a.suspendHistory {
+		return
+	}
+	a.undoStack = append(a.undoStack, a.makeSnapshot())
+	a.trimUndoStack()
+	a.redoStack = nil
+}
+
+func (a *App) beginHistoryBatch() {
+	if a.historyBatchOpen {
+		return
+	}
+	a.captureUndoSnapshot()
+	a.historyBatchOpen = true
+}
+
+func (a *App) endHistoryBatch() {
+	a.historyBatchOpen = false
+}
+
+func (a *App) restoreSnapshot(s appSnapshot) {
+	a.suspendHistory = true
+	a.historyBatchOpen = false
+	a.doc = cloneDocument(s.Doc)
+	normalizeDocument(&a.doc)
+	a.curFrame = s.CurFrame
+	if a.curFrame < 1 {
+		a.curFrame = 1
+	}
+	if a.curFrame > a.doc.TotalFrames {
+		a.curFrame = a.doc.TotalFrames
+	}
+	a.selectedLayerIdx = -1
+	a.selectedInstIdx = -1
+	a.selectedInstances = make(map[string]bool)
+	for key, selected := range s.SelectedInstances {
+		if !selected {
+			continue
+		}
+		li, ii, ok := parseSelKey(key)
+		if !ok || li < 0 || li >= len(a.doc.Layers) || ii < 0 || ii >= len(a.doc.Layers[li].Instances) {
+			continue
+		}
+		a.selectedInstances[key] = true
+	}
+	if s.SelectedLayerIdx >= 0 && s.SelectedLayerIdx < len(a.doc.Layers) &&
+		s.SelectedInstIdx >= 0 && s.SelectedInstIdx < len(a.doc.Layers[s.SelectedLayerIdx].Instances) {
+		a.selectedLayerIdx = s.SelectedLayerIdx
+		a.selectedInstIdx = s.SelectedInstIdx
+	}
+	a.selectedTweenLayerIdx = -1
+	a.selectedTweenInstIdx = -1
+	a.selectedTweenStartFrame = -1
+	a.selectedTweenEndFrame = -1
+	if s.SelectedTweenLayerIdx >= 0 && s.SelectedTweenLayerIdx < len(a.doc.Layers) &&
+		s.SelectedTweenInstIdx >= 0 && s.SelectedTweenInstIdx < len(a.doc.Layers[s.SelectedTweenLayerIdx].Instances) {
+		a.selectedTweenLayerIdx = s.SelectedTweenLayerIdx
+		a.selectedTweenInstIdx = s.SelectedTweenInstIdx
+		a.selectedTweenStartFrame = s.SelectedTweenStartFrame
+		a.selectedTweenEndFrame = s.SelectedTweenEndFrame
+	}
+	a.selectedLibrarySymbolID = s.SelectedLibrarySymbolID
+	a.closeDocumentDialog()
+	a.closeSettingsDialog()
+	a.refreshDocUI()
+	a.resizeCanvases()
+	a.updatePropertiesPanel()
+	a.suspendHistory = false
+}
+
+func (a *App) undo() {
+	if len(a.undoStack) == 0 {
+		a.statusEl.Set("textContent", "Nothing to undo")
+		return
+	}
+	current := a.makeSnapshot()
+	last := a.undoStack[len(a.undoStack)-1]
+	a.undoStack = a.undoStack[:len(a.undoStack)-1]
+	a.redoStack = append(a.redoStack, current)
+	a.restoreSnapshot(last)
+	a.statusEl.Set("textContent", "Undo")
+}
+
+func (a *App) redo() {
+	if len(a.redoStack) == 0 {
+		a.statusEl.Set("textContent", "Nothing to redo")
+		return
+	}
+	current := a.makeSnapshot()
+	next := a.redoStack[len(a.redoStack)-1]
+	a.redoStack = a.redoStack[:len(a.redoStack)-1]
+	a.undoStack = append(a.undoStack, current)
+	a.trimUndoStack()
+	a.restoreSnapshot(next)
+	a.statusEl.Set("textContent", "Redo")
+}
+
 func main() {
 	app := &App{
 		doc:                     newDefaultDocument(),
 		activeTool:              "select",
 		curFrame:                1,
 		autoKey:                 true,
+		maxUndoChanges:          100,
 		zoom:                    10,  // px per frame
 		layerH:                  28,  // px
 		headerW:                 180, // px
@@ -422,6 +595,8 @@ func main() {
 		layerCtxTargetIdx:       -1,
 		stageCtxLayerIdx:        -1,
 		stageCtxInstIdx:         -1,
+		keyframeCtxLayerIdx:     -1,
+		keyframeCtxFrame:        -1,
 	}
 
 	app.initDOM()
@@ -481,6 +656,7 @@ func (a *App) initDOM() {
 	a.propEaseDir = d.Call("getElementById", "propEaseDir")
 	a.layerCtxMenu = d.Call("getElementById", "layerContextMenu")
 	a.stageCtxMenu = d.Call("getElementById", "stageContextMenu")
+	a.keyframeCtxMenu = d.Call("getElementById", "keyframeContextMenu")
 	a.autoKeyBtn = d.Call("getElementById", "btn-autokey")
 	a.docDialog = d.Call("getElementById", "docDialog")
 	a.docDlgWidth = d.Call("getElementById", "docDialogWidth")
@@ -489,6 +665,10 @@ func (a *App) initDOM() {
 	a.docDlgBg = d.Call("getElementById", "docDialogBg")
 	a.docDlgCancel = d.Call("getElementById", "docDialogCancel")
 	a.docDlgSave = d.Call("getElementById", "docDialogSave")
+	a.settingsDialog = d.Call("getElementById", "settingsDialog")
+	a.settingsMaxUndo = d.Call("getElementById", "settingsMaxUndo")
+	a.settingsDlgCancel = d.Call("getElementById", "settingsDialogCancel")
+	a.settingsDlgSave = d.Call("getElementById", "settingsDialogSave")
 
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
@@ -681,6 +861,7 @@ func (a *App) renameSymbol(symbolID, newName string) {
 			a.updateLibraryPanel()
 			return
 		}
+		a.captureUndoSnapshot()
 		a.doc.Symbols[i].Name = newName
 		a.updateLibraryPanel()
 		a.statusEl.Set("textContent", fmt.Sprintf("Renamed symbol to %s", newName))
@@ -720,6 +901,7 @@ func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
 	if !ok {
 		return
 	}
+	a.captureUndoSnapshot()
 	for i := range a.doc.Layers {
 		a.doc.Layers[i].Selected = false
 	}
@@ -1227,6 +1409,14 @@ func (a *App) closeStageContextMenu() {
 	a.stageCtxInstIdx = -1
 }
 
+func (a *App) closeKeyframeContextMenu() {
+	if a.keyframeCtxMenu.Truthy() {
+		a.keyframeCtxMenu.Get("classList").Call("remove", "open")
+	}
+	a.keyframeCtxLayerIdx = -1
+	a.keyframeCtxFrame = -1
+}
+
 func (a *App) openLayerContextMenu(layerIdx int, clientX, clientY float64) {
 	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || !a.layerCtxMenu.Truthy() {
 		return
@@ -1248,6 +1438,63 @@ func (a *App) openStageContextMenu(layerIdx, instIdx int, clientX, clientY float
 	a.stageCtxMenu.Get("classList").Call("add", "open")
 }
 
+func (a *App) openKeyframeContextMenu(layerIdx, frame int, clientX, clientY float64) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || frame < 1 || frame > a.doc.TotalFrames || !a.keyframeCtxMenu.Truthy() {
+		return
+	}
+	a.keyframeCtxLayerIdx = layerIdx
+	a.keyframeCtxFrame = frame
+	a.keyframeCtxMenu.Get("style").Set("left", fmt.Sprintf("%.0fpx", clientX))
+	a.keyframeCtxMenu.Get("style").Set("top", fmt.Sprintf("%.0fpx", clientY))
+	a.keyframeCtxMenu.Get("classList").Call("add", "open")
+}
+
+func (a *App) pickTimelineKeyframeAt(x, y float64) (int, int, bool) {
+	if x <= a.headerW {
+		return -1, -1, false
+	}
+	rowTop := 10.0 + 22.0 - 18.0
+	layerIdx := int((y - rowTop) / a.layerH)
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return -1, -1, false
+	}
+	frame := a.xToFrame(x)
+	keyX := a.frameToX(frame)
+	keyW := math.Max(6, a.zoom-4)
+	if x < keyX+2 || x > keyX+2+keyW {
+		return -1, -1, false
+	}
+	if !a.doc.Layers[layerIdx].hasKeyframe(frame) {
+		return -1, -1, false
+	}
+	return layerIdx, frame, true
+}
+
+func (a *App) deleteKeyframe(layerIdx, frame int) {
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || frame < 1 || frame > a.doc.TotalFrames {
+		return
+	}
+	removed := 0
+	for _, inst := range a.doc.Layers[layerIdx].Instances {
+		if _, ok := inst.Keyframes[frame]; ok {
+			removed++
+		}
+	}
+	if removed == 0 {
+		a.statusEl.Set("textContent", "No keyframe found to delete")
+		return
+	}
+	a.captureUndoSnapshot()
+	for ii := range a.doc.Layers[layerIdx].Instances {
+		delete(a.doc.Layers[layerIdx].Instances[ii].Keyframes, frame)
+	}
+	if a.selectedTweenLayerIdx == layerIdx && (a.selectedTweenStartFrame == frame || a.selectedTweenEndFrame == frame) {
+		a.clearTweenSelection()
+	}
+	a.updatePropertiesPanel()
+	a.statusEl.Set("textContent", fmt.Sprintf("Deleted keyframe at %d", frame))
+}
+
 func (a *App) renameLayer(layerIdx int) {
 	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
 		return
@@ -1261,6 +1508,7 @@ func (a *App) renameLayer(layerIdx int) {
 	if name == "" || name == current {
 		return
 	}
+	a.captureUndoSnapshot()
 	a.doc.Layers[layerIdx].Name = name
 	a.updateSelectedLayerLabel()
 	a.statusEl.Set("textContent", "Layer renamed")
@@ -1270,6 +1518,7 @@ func (a *App) deleteLayer(layerIdx int) {
 	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
 		return
 	}
+	a.captureUndoSnapshot()
 
 	if len(a.doc.Layers) == 1 {
 		a.doc.Layers[0] = Layer{
@@ -1308,6 +1557,7 @@ func (a *App) deleteInstance(layerIdx, instIdx int) {
 	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
 		return
 	}
+	a.captureUndoSnapshot()
 	layer := &a.doc.Layers[layerIdx]
 	layer.Instances = append(layer.Instances[:instIdx], layer.Instances[instIdx+1:]...)
 	a.clearInstanceSelection()
@@ -1321,6 +1571,12 @@ func (a *App) closeDocumentDialog() {
 	}
 }
 
+func (a *App) closeSettingsDialog() {
+	if a.settingsDialog.Truthy() {
+		a.settingsDialog.Get("classList").Call("remove", "open")
+	}
+}
+
 func (a *App) openDocumentDialog() {
 	if !a.docDialog.Truthy() {
 		return
@@ -1331,6 +1587,15 @@ func (a *App) openDocumentDialog() {
 	a.docDlgBg.Set("value", normalizeHexColor(a.doc.Background))
 	a.docDialog.Get("classList").Call("add", "open")
 	a.docDlgWidth.Call("focus")
+}
+
+func (a *App) openSettingsDialog() {
+	if !a.settingsDialog.Truthy() {
+		return
+	}
+	a.settingsMaxUndo.Set("value", fmt.Sprintf("%d", a.maxUndoChanges))
+	a.settingsDialog.Get("classList").Call("add", "open")
+	a.settingsMaxUndo.Call("focus")
 }
 
 func (a *App) submitDocumentDialog() {
@@ -1368,6 +1633,7 @@ func (a *App) submitDocumentDialog() {
 		return
 	}
 
+	a.captureUndoSnapshot()
 	a.doc.Width = width
 	a.doc.Height = height
 	a.doc.FPS = fps
@@ -1376,6 +1642,31 @@ func (a *App) submitDocumentDialog() {
 	a.resizeCanvases()
 	a.closeDocumentDialog()
 	a.statusEl.Set("textContent", "Document modified")
+}
+
+func (a *App) submitSettingsDialog() {
+	parseInt := func(input js.Value, min int) (int, bool) {
+		v := int(input.Get("valueAsNumber").Float())
+		if v >= min {
+			return v, true
+		}
+		s := strings.TrimSpace(input.Get("value").String())
+		n, err := strconv.Atoi(s)
+		if err != nil || n < min {
+			return 0, false
+		}
+		return n, true
+	}
+
+	maxUndo, ok := parseInt(a.settingsMaxUndo, 1)
+	if !ok {
+		a.statusEl.Set("textContent", "Max Undo Changes must be greater than zero")
+		return
+	}
+	a.maxUndoChanges = maxUndo
+	a.trimUndoStack()
+	a.closeSettingsDialog()
+	a.statusEl.Set("textContent", "Application settings updated")
 }
 
 func selKey(layerIdx, instIdx int) string {
@@ -1439,6 +1730,7 @@ func (a *App) convertSelectedInstanceToSymbol() {
 		a.statusEl.Set("textContent", "Only stage instances can be converted to a symbol")
 		return
 	}
+	a.captureUndoSnapshot()
 
 	symbolID := a.nextSymbolID()
 	symbolName := fmt.Sprintf("Movie Clip %d", len(a.doc.Symbols)+1)
@@ -1642,6 +1934,7 @@ func normalizeHexColor(s string) string {
 }
 
 func (a *App) applyTransformField(field string, value float64) {
+	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
 		kf, ok := a.writableTransformKeyframe(li, ii, a.curFrame)
@@ -1676,6 +1969,7 @@ func (a *App) applyInstanceName(value string) {
 	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(a.doc.Layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(a.doc.Layers[a.selectedLayerIdx].Instances) {
 		return
 	}
+	a.captureUndoSnapshot()
 	a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx].Name = value
 	a.updateSelectedLayerLabel()
 	a.updatePropertiesPanel()
@@ -1683,6 +1977,7 @@ func (a *App) applyInstanceName(value string) {
 
 func (a *App) applyShapeColor(field, color string) {
 	color = normalizeHexColor(color)
+	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
 		inst := a.doc.Layers[li].Instances[ii]
@@ -1722,6 +2017,7 @@ func (a *App) applyShapeNumeric(field string, value float64) {
 	if field == "strokeW" && value < 0 {
 		value = 0
 	}
+	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
 		inst := a.doc.Layers[li].Instances[ii]
@@ -1751,6 +2047,7 @@ func (a *App) applyShapeNumeric(field string, value float64) {
 }
 
 func (a *App) applyRotationDelta(deltaRad float64) {
+	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
 		kf, ok := a.writableTransformKeyframe(li, ii, a.curFrame)
@@ -1767,6 +2064,7 @@ func (a *App) applySelectedTweenEase(mode, dir string) {
 	if !ok {
 		return
 	}
+	a.captureUndoSnapshot()
 	kf.EaseMode = normalizeEaseMode(mode)
 	kf.EaseDir = normalizeEaseDir(dir)
 	a.setInstanceKeyframe(a.selectedTweenLayerIdx, a.selectedTweenInstIdx, a.selectedTweenStartFrame, kf)
@@ -1780,10 +2078,15 @@ func (a *App) addKeyframeForSelectedInstances() {
 	}
 
 	added := 0
+	captured := false
 	for _, pair := range pairs {
 		li, ii := pair[0], pair[1]
 		if _, exists := a.getExactInstanceKeyframe(li, ii, a.curFrame); exists {
 			continue
+		}
+		if !captured {
+			a.captureUndoSnapshot()
+			captured = true
 		}
 		a.addKeyframe(li, ii, a.curFrame)
 		added++
@@ -2172,6 +2475,7 @@ func (a *App) commitPenPath(closed bool) {
 		a.clearPenDraft()
 		return
 	}
+	a.captureUndoSnapshot()
 
 	sumX := 0.0
 	sumY := 0.0
@@ -2230,6 +2534,8 @@ func (a *App) loadDocumentJSONText(text string) error {
 	}
 	normalizeDocument(&doc)
 	a.doc = doc
+	a.undoStack = nil
+	a.redoStack = nil
 	a.clearInstanceSelection()
 	a.setFrame(a.curFrame)
 	a.refreshDocUI()
@@ -2444,12 +2750,32 @@ func (a *App) bindUI() {
 		}
 		return nil
 	})
+	settingsDlgCancelCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.closeSettingsDialog()
+		return nil
+	})
+	settingsDlgSaveCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.submitSettingsDialog()
+		return nil
+	})
+	settingsDlgOverlayCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 && args[0].Get("target").Equal(a.settingsDialog) {
+			a.closeSettingsDialog()
+		}
+		return nil
+	})
 	a.holdCallback(docDlgCancelCb)
 	a.holdCallback(docDlgSaveCb)
 	a.holdCallback(docDlgOverlayCb)
+	a.holdCallback(settingsDlgCancelCb)
+	a.holdCallback(settingsDlgSaveCb)
+	a.holdCallback(settingsDlgOverlayCb)
 	a.docDlgCancel.Call("addEventListener", "click", docDlgCancelCb)
 	a.docDlgSave.Call("addEventListener", "click", docDlgSaveCb)
 	a.docDialog.Call("addEventListener", "click", docDlgOverlayCb)
+	a.settingsDlgCancel.Call("addEventListener", "click", settingsDlgCancelCb)
+	a.settingsDlgSave.Call("addEventListener", "click", settingsDlgSaveCb)
+	a.settingsDialog.Call("addEventListener", "click", settingsDlgOverlayCb)
 	layerRenameCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) > 0 {
 			args[0].Call("preventDefault")
@@ -2499,14 +2825,27 @@ func (a *App) bindUI() {
 		a.convertSelectedInstanceToSymbol()
 		return nil
 	})
+	keyframeDeleteCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			args[0].Call("preventDefault")
+			args[0].Call("stopPropagation")
+		}
+		layerIdx := a.keyframeCtxLayerIdx
+		frame := a.keyframeCtxFrame
+		a.closeKeyframeContextMenu()
+		a.deleteKeyframe(layerIdx, frame)
+		return nil
+	})
 	a.holdCallback(layerRenameCb)
 	a.holdCallback(layerDeleteCb)
 	a.holdCallback(stageDeleteCb)
 	a.holdCallback(stageConvertCb)
+	a.holdCallback(keyframeDeleteCb)
 	js.Global().Get("document").Call("getElementById", "ctx-rename-layer").Call("addEventListener", "click", layerRenameCb)
 	js.Global().Get("document").Call("getElementById", "ctx-delete-layer").Call("addEventListener", "click", layerDeleteCb)
 	js.Global().Get("document").Call("getElementById", "ctx-convert-to-symbol").Call("addEventListener", "click", stageConvertCb)
 	js.Global().Get("document").Call("getElementById", "ctx-delete-instance").Call("addEventListener", "click", stageDeleteCb)
+	js.Global().Get("document").Call("getElementById", "ctx-delete-keyframe").Call("addEventListener", "click", keyframeDeleteCb)
 	rotDecCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applyRotationDelta(-5 * math.Pi / 180)
 		return nil
@@ -2564,6 +2903,7 @@ func (a *App) bindUI() {
 	// add layer
 	d.Call("getElementById", "btn-layer").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.captureUndoSnapshot()
 			for i := range a.doc.Layers {
 				a.doc.Layers[i].Selected = false
 			}
@@ -2591,6 +2931,7 @@ func (a *App) bindUI() {
 	d.Call("addEventListener", "click", js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
+		a.closeKeyframeContextMenu()
 		return nil
 	}))
 	d.Call("addEventListener", "mousemove", js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -2606,8 +2947,10 @@ func (a *App) bindUI() {
 	d.Call("addEventListener", "keydown", js.FuncOf(func(this js.Value, args []js.Value) any {
 		e := args[0]
 		key := e.Get("key").String()
+		mod := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool()
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
+		a.closeKeyframeContextMenu()
 		if a.docDialog.Truthy() && a.docDialog.Get("classList").Call("contains", "open").Bool() {
 			if key == "Escape" {
 				e.Call("preventDefault")
@@ -2619,6 +2962,28 @@ func (a *App) bindUI() {
 				a.submitDocumentDialog()
 				return nil
 			}
+		}
+		if a.settingsDialog.Truthy() && a.settingsDialog.Get("classList").Call("contains", "open").Bool() {
+			if key == "Escape" {
+				e.Call("preventDefault")
+				a.closeSettingsDialog()
+				return nil
+			}
+			if key == "Enter" {
+				e.Call("preventDefault")
+				a.submitSettingsDialog()
+				return nil
+			}
+		}
+		if mod && strings.EqualFold(key, "z") {
+			e.Call("preventDefault")
+			a.undo()
+			return nil
+		}
+		if mod && strings.EqualFold(key, "y") {
+			e.Call("preventDefault")
+			a.redo()
+			return nil
 		}
 		if key == " " {
 			e.Call("preventDefault")
@@ -2648,6 +3013,14 @@ func (a *App) bindUI() {
 		x := e.Get("offsetX").Float()
 		y := e.Get("offsetY").Float()
 		a.closeLayerContextMenu()
+		a.closeStageContextMenu()
+		a.closeKeyframeContextMenu()
+		if layerIdx, frame, ok := a.pickTimelineKeyframeAt(x, y); ok {
+			e.Call("preventDefault")
+			e.Call("stopPropagation")
+			a.openKeyframeContextMenu(layerIdx, frame, e.Get("clientX").Float(), e.Get("clientY").Float())
+			return nil
+		}
 		if x > a.headerW {
 			return nil
 		}
@@ -2669,6 +3042,7 @@ func (a *App) bindUI() {
 		x := e.Get("offsetX").Float()
 		y := e.Get("offsetY").Float()
 		a.closeLayerContextMenu()
+		a.closeKeyframeContextMenu()
 
 		// click layer header area to select layer (Ctrl/Cmd toggles)
 		if x <= a.headerW {
@@ -2720,6 +3094,7 @@ func (a *App) bindUI() {
 		}
 		a.draggingPH = false
 		a.dragMode = ""
+		a.endHistoryBatch()
 		if a.drawingCircle {
 			a.drawingCircle = false
 		}
@@ -2777,18 +3152,22 @@ func (a *App) bindUI() {
 					skewXx, skewXy := maxX+14, (minY+maxY)/2
 					skewYx, skewYy := (minX+maxX)/2, maxY+14
 					if dist(x, y, rotateX, rotateY) <= 8 {
+						a.beginHistoryBatch()
 						a.dragMode = "rotate"
 						return nil
 					}
 					if dist(x, y, scaleX, scaleY) <= 8 {
+						a.beginHistoryBatch()
 						a.dragMode = "scale"
 						return nil
 					}
 					if dist(x, y, skewXx, skewXy) <= 8 {
+						a.beginHistoryBatch()
 						a.dragMode = "skewX"
 						return nil
 					}
 					if dist(x, y, skewYx, skewYy) <= 8 {
+						a.beginHistoryBatch()
 						a.dragMode = "skewY"
 						return nil
 					}
@@ -2813,6 +3192,7 @@ func (a *App) bindUI() {
 					}
 				}
 				a.updateSelectedLayerLabel()
+				a.beginHistoryBatch()
 				a.dragMode = "move"
 			} else {
 				if !additive {
@@ -2878,6 +3258,7 @@ func (a *App) bindUI() {
 			a.selectedPathPt = closest
 			a.selectedHandle = closestHandle
 			if closest >= 0 {
+				a.beginHistoryBatch()
 				a.dragMode = "subselect"
 			}
 		case "circle":
@@ -3068,6 +3449,7 @@ func (a *App) bindUI() {
 			a.circleNowY = y
 			r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
 			if r >= 2 {
+				a.captureUndoSnapshot()
 				circleID := a.nextCircleID()
 				a.doc.Circles = append(a.doc.Circles, VectorCircle{
 					ID:      circleID,
@@ -3664,6 +4046,8 @@ func (a *App) handleMenuAction(action string) {
 
 	case "file.new":
 		a.doc = newDefaultDocument()
+		a.undoStack = nil
+		a.redoStack = nil
 		a.clearInstanceSelection()
 		a.setFrame(1)
 		a.playing = false
@@ -3675,6 +4059,8 @@ func (a *App) handleMenuAction(action string) {
 			a.statusEl.Set("textContent", "Open failed: "+err.Error())
 			return
 		}
+		a.undoStack = nil
+		a.redoStack = nil
 		a.statusEl.Set("textContent", "Choose a .json document to open")
 
 	case "file.save":
@@ -3689,10 +4075,13 @@ func (a *App) handleMenuAction(action string) {
 		js.Global().Call("alert", "Export hook clicked")
 
 	case "edit.undo":
-		a.statusEl.Set("textContent", "Undo requested")
+		a.undo()
 
 	case "edit.redo":
-		a.statusEl.Set("textContent", "Redo requested")
+		a.redo()
+
+	case "edit.settings":
+		a.openSettingsDialog()
 
 	case "edit.cut":
 		a.statusEl.Set("textContent", "Cut requested")
@@ -3716,6 +4105,7 @@ func (a *App) handleMenuAction(action string) {
 		a.statusEl.Set("textContent", "Zoom reset")
 
 	case "insert.layer":
+		a.captureUndoSnapshot()
 		for i := range a.doc.Layers {
 			a.doc.Layers[i].Selected = false
 		}

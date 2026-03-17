@@ -27,6 +27,7 @@
           <button id="btn-cut" class="menuItem" data-action="edit.cut">Cut</button>
           <button id="btn-copy" class="menuItem" data-action="edit.copy">Copy</button>
           <button id="btn-paste" class="menuItem" data-action="edit.paste">Paste</button>
+          <button id="btn-app-settings" class="menuItem" data-action="edit.settings">Application Settings</button>
         </div>
       </div>
 
@@ -198,6 +199,10 @@
     <button id="ctx-delete-instance" class="menuItem" type="button">Delete Instance</button>
   </div>
 
+  <div id="keyframeContextMenu" class="dropdown contextMenu">
+    <button id="ctx-delete-keyframe" class="menuItem" type="button">Delete Keyframe</button>
+  </div>
+
   <div id="docDialog" class="modalOverlay">
     <div class="modalCard">
       <div class="modalTitle">Modify Document</div>
@@ -222,6 +227,22 @@
       <div class="modalActions">
         <button id="docDialogCancel" class="btn" type="button">Cancel</button>
         <button id="docDialogSave" class="btn" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsDialog" class="modalOverlay">
+    <div class="modalCard">
+      <div class="modalTitle">Application Settings</div>
+      <div class="modalBody">
+        <label class="modalField">
+          <span class="modalLabel">Max Undo Changes</span>
+          <input id="settingsMaxUndo" class="propInput modalInput" type="number" min="1" step="1" />
+        </label>
+      </div>
+      <div class="modalActions">
+        <button id="settingsDialogCancel" class="btn" type="button">Cancel</button>
+        <button id="settingsDialogSave" class="btn" type="button">Save</button>
       </div>
     </div>
   </div>
