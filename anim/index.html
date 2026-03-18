@@ -15,6 +15,7 @@
           <button id="btn-new" class="menuItem" data-action="file.new">New</button>
           <button id="btn-open" class="menuItem" data-action="file.open">Open&hellip;</button>
           <button id="btn-save" class="menuItem" data-action="file.save">Save</button>
+          <button id="btn-import-image" class="menuItem" data-action="file.importImage">Import Image&hellip;</button>
           <button id="btn-export" class="menuItem" data-action="file.export">Export</button>
         </div>
       </div>
@@ -98,7 +99,7 @@
       </div>
 
       <div class="spacer"></div>
-      <div class="pill">Scene 1</div>
+      <div id="sceneNamePill" class="pill">Scene 1</div>
       <div class="pill">100%</div>
       <button id="btn-publish" class="btn">Publish</button>
     </div>
@@ -244,6 +245,10 @@
     <div class="modalCard">
       <div class="modalTitle">Modify Document</div>
       <div class="modalBody">
+        <label class="modalField">
+          <span class="modalLabel">Document Name</span>
+          <input id="docDialogName" class="propInput modalInput" type="text" />
+        </label>
         <label class="modalField">
           <span class="modalLabel">Width</span>
           <input id="docDialogWidth" class="propInput modalInput" type="number" min="1" step="1" />

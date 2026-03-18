@@ -33,6 +33,10 @@ type Symbol struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
 	SymbolType string            `json:"symbolType"`
+	AssetURL   string            `json:"assetURL,omitempty"`
+	BitmapData string            `json:"bitmapData,omitempty"`
+	BitmapW    float64           `json:"bitmapW,omitempty"`
+	BitmapH    float64           `json:"bitmapH,omitempty"`
 	Instances  []ElementInstance `json:"instances"`
 }
 
@@ -313,6 +317,7 @@ type App struct {
 	tlCtx    js.Value
 
 	statusEl               js.Value
+	sceneNameEl            js.Value
 	docSizeEl              js.Value
 	docFpsEl               js.Value
 	curFrameEl             js.Value
@@ -345,6 +350,7 @@ type App struct {
 	keyframeCtxMenu        js.Value
 	autoKeyBtn             js.Value
 	docDialog              js.Value
+	docDlgName             js.Value
 	docDlgWidth            js.Value
 	docDlgHeight           js.Value
 	docDlgFps              js.Value
@@ -367,6 +373,7 @@ type App struct {
 	colorPickerColor       js.Value
 	colorPickerAlpha       js.Value
 	colorPickerAlphaValue  js.Value
+	bitmapImages           map[string]js.Value
 
 	// timeline state
 	curFrame       int // 1-based
@@ -531,6 +538,7 @@ func (a *App) restoreSnapshot(s appSnapshot) {
 	a.historyBatchOpen = false
 	a.doc = cloneDocument(s.Doc)
 	normalizeDocument(&a.doc)
+	a.syncBitmapAssets()
 	a.curFrame = s.CurFrame
 	if a.curFrame < 1 {
 		a.curFrame = 1
@@ -611,6 +619,7 @@ func main() {
 		shapeSides:              5,
 		shapeToolFill:           "#66e3ff",
 		shapeToolStroke:         "#66e3ff",
+		bitmapImages:            make(map[string]js.Value),
 		curFrame:                1,
 		autoKey:                 true,
 		lockScale:               true,
@@ -662,6 +671,7 @@ func (a *App) initDOM() {
 	a.tlCtx = a.tlCanvas.Call("getContext", "2d")
 
 	a.statusEl = d.Call("getElementById", "status")
+	a.sceneNameEl = d.Call("getElementById", "sceneNamePill")
 	a.docSizeEl = d.Call("getElementById", "docSize")
 	a.docFpsEl = d.Call("getElementById", "docFps")
 	a.curFrameEl = d.Call("getElementById", "curFrame")
@@ -694,6 +704,7 @@ func (a *App) initDOM() {
 	a.keyframeCtxMenu = d.Call("getElementById", "keyframeContextMenu")
 	a.autoKeyBtn = d.Call("getElementById", "btn-autokey")
 	a.docDialog = d.Call("getElementById", "docDialog")
+	a.docDlgName = d.Call("getElementById", "docDialogName")
 	a.docDlgWidth = d.Call("getElementById", "docDialogWidth")
 	a.docDlgHeight = d.Call("getElementById", "docDialogHeight")
 	a.docDlgFps = d.Call("getElementById", "docDialogFps")
@@ -718,6 +729,7 @@ func (a *App) initDOM() {
 	a.colorPickerAlphaValue = d.Call("getElementById", "colorPickerAlphaValue")
 
 	a.statusEl.Set("textContent", "WASM ready")
+	a.syncBitmapAssets()
 	a.refreshDocUI()
 	a.updateAutoKeyUI()
 	a.updateScaleLockUI()
@@ -725,6 +737,10 @@ func (a *App) initDOM() {
 }
 
 func (a *App) refreshDocUI() {
+	if a.sceneNameEl.Truthy() {
+		a.sceneNameEl.Set("textContent", a.doc.Name)
+	}
+	js.Global().Get("document").Set("title", fmt.Sprintf("%s - Animate-like Editor (Go WASM)", a.doc.Name))
 	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
 	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
 	if a.stageCanvas.Truthy() {
@@ -921,7 +937,11 @@ func (a *App) updateLibraryPanel() {
 		name.Call("addEventListener", "mousedown", renameCb)
 		meta := d.Call("createElement", "div")
 		meta.Set("className", "libraryMeta")
-		meta.Set("textContent", fmt.Sprintf("%s, %d nested instance(s)", strings.Title(sym.SymbolType), len(sym.Instances)))
+		if sym.SymbolType == "bitmap" {
+			meta.Set("textContent", fmt.Sprintf("Bitmap, %.0f x %.0f", sym.BitmapW, sym.BitmapH))
+		} else {
+			meta.Set("textContent", fmt.Sprintf("%s, %d nested instance(s)", strings.Title(sym.SymbolType), len(sym.Instances)))
+		}
 		item.Call("appendChild", name)
 		item.Call("appendChild", meta)
 		mouseDownCb := js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -951,7 +971,7 @@ func (a *App) symbolNameByID(id string) string {
 	if sym, ok := a.findSymbolByID(id); ok {
 		return sym.Name
 	}
-	return "Movie Clip"
+	return "Symbol"
 }
 
 func (a *App) renameSymbol(symbolID, newName string) {
@@ -1048,6 +1068,48 @@ func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
 	a.statusEl.Set("textContent", "Symbol placed on new layer")
 }
 
+func baseNameWithoutExt(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Bitmap"
+	}
+	if idx := strings.LastIndex(name, "."); idx > 0 {
+		name = name[:idx]
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Bitmap"
+	}
+	return name
+}
+
+func (a *App) createTopLayer(name, description string) int {
+	for i := range a.doc.Layers {
+		a.doc.Layers[i].Selected = false
+	}
+	layer := Layer{
+		Name:        name,
+		Description: description,
+		Color:       "#c77dff",
+		Selected:    true,
+		Instances:   []ElementInstance{},
+	}
+	a.doc.Layers = append([]Layer{layer}, a.doc.Layers...)
+	return 0
+}
+
+func (a *App) targetLayerForImportedBitmap(symbolName string) int {
+	if a.selectedLayerIdx >= 0 && a.selectedLayerIdx < len(a.doc.Layers) {
+		return a.selectedLayerIdx
+	}
+	for i := range a.doc.Layers {
+		if a.doc.Layers[i].Selected {
+			return i
+		}
+	}
+	return a.createTopLayer(symbolName, "Layer created for imported bitmap")
+}
+
 func sanitizeFileName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1136,10 +1198,22 @@ func normalizeDocument(doc *Document) {
 			sym.ID = fmt.Sprintf("symbol-%d", si+1)
 		}
 		if sym.Name == "" {
-			sym.Name = fmt.Sprintf("Movie Clip %d", si+1)
+			if sym.SymbolType == "bitmap" {
+				sym.Name = fmt.Sprintf("Bitmap %d", si+1)
+			} else {
+				sym.Name = fmt.Sprintf("Movie Clip %d", si+1)
+			}
 		}
 		if sym.SymbolType == "" {
 			sym.SymbolType = "movieclip"
+		}
+		if sym.SymbolType == "bitmap" {
+			if sym.BitmapW < 0 {
+				sym.BitmapW = -sym.BitmapW
+			}
+			if sym.BitmapH < 0 {
+				sym.BitmapH = -sym.BitmapH
+			}
 		}
 		if sym.Instances == nil {
 			sym.Instances = []ElementInstance{}
@@ -1853,12 +1927,13 @@ func (a *App) openDocumentDialog() {
 	if !a.docDialog.Truthy() {
 		return
 	}
+	a.docDlgName.Set("value", a.doc.Name)
 	a.docDlgWidth.Set("value", fmt.Sprintf("%d", a.doc.Width))
 	a.docDlgHeight.Set("value", fmt.Sprintf("%d", a.doc.Height))
 	a.docDlgFps.Set("value", fmt.Sprintf("%d", a.doc.FPS))
 	a.docDlgBg.Set("value", normalizeHexColor(a.doc.Background))
 	a.docDialog.Get("classList").Call("add", "open")
-	a.docDlgWidth.Call("focus")
+	a.docDlgName.Call("focus")
 }
 
 func (a *App) openSettingsDialog() {
@@ -1884,6 +1959,11 @@ func (a *App) submitDocumentDialog() {
 		return n, true
 	}
 
+	name := strings.TrimSpace(a.docDlgName.Get("value").String())
+	if name == "" {
+		a.statusEl.Set("textContent", "Document name is required")
+		return
+	}
 	width, ok := parseInt(a.docDlgWidth, 1)
 	if !ok {
 		a.statusEl.Set("textContent", "Document width must be at least 1")
@@ -1906,6 +1986,7 @@ func (a *App) submitDocumentDialog() {
 	}
 
 	a.captureUndoSnapshot()
+	a.doc.Name = name
 	a.doc.Width = width
 	a.doc.Height = height
 	a.doc.FPS = fps
@@ -2164,6 +2245,17 @@ func (a *App) findSymbolByID(id string) (Symbol, bool) {
 	return Symbol{}, false
 }
 
+func (a *App) bitmapImageBySymbolID(id string) (js.Value, bool) {
+	if a.bitmapImages == nil {
+		return js.Value{}, false
+	}
+	img, ok := a.bitmapImages[id]
+	if !ok || !img.Truthy() {
+		return js.Value{}, false
+	}
+	return img, true
+}
+
 func cloneKeyframes(src map[int]InstanceKeyframe) map[int]InstanceKeyframe {
 	dst := make(map[int]InstanceKeyframe, len(src))
 	for frame, kf := range src {
@@ -2179,6 +2271,46 @@ func cloneInstance(inst ElementInstance) ElementInstance {
 }
 
 func dist(x1, y1, x2, y2 float64) float64 { return math.Hypot(x1-x2, y1-y2) }
+
+func bitmapSource(sym Symbol) string {
+	if strings.TrimSpace(sym.BitmapData) != "" {
+		return sym.BitmapData
+	}
+	return strings.TrimSpace(sym.AssetURL)
+}
+
+func (a *App) syncBitmapAssets() {
+	if a.bitmapImages == nil {
+		a.bitmapImages = make(map[string]js.Value)
+	}
+	next := make(map[string]js.Value)
+	for _, sym := range a.doc.Symbols {
+		src := bitmapSource(sym)
+		if sym.SymbolType != "bitmap" || src == "" {
+			continue
+		}
+		if img, ok := a.bitmapImages[sym.ID]; ok && img.Truthy() && img.Get("src").String() == src {
+			next[sym.ID] = img
+			continue
+		}
+		img := js.Global().Get("Image").New()
+		loadCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.renderAll()
+			return nil
+		})
+		errorCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.renderAll()
+			return nil
+		})
+		a.holdCallback(loadCb)
+		a.holdCallback(errorCb)
+		img.Call("addEventListener", "load", loadCb)
+		img.Call("addEventListener", "error", errorCb)
+		img.Set("src", src)
+		next[sym.ID] = img
+	}
+	a.bitmapImages = next
+}
 
 func normalizeHexColor(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
@@ -2841,6 +2973,9 @@ func transformBounds(m mat2d, minX, minY, maxX, maxY float64) (float64, float64,
 }
 
 func (a *App) symbolBoundsAtFrame(sym Symbol, frame int) (float64, float64, float64, float64, bool) {
+	if sym.SymbolType == "bitmap" && sym.BitmapW > 0 && sym.BitmapH > 0 {
+		return 0, 0, sym.BitmapW, sym.BitmapH, true
+	}
 	var minX, minY, maxX, maxY float64
 	have := false
 	for _, nested := range sym.Instances {
@@ -2918,8 +3053,14 @@ func (a *App) drawInstanceRecursive(ctx js.Value, inst ElementInstance, frame, d
 		}
 	case "symbol":
 		if sym, ok := a.findSymbolByID(inst.ElementID); ok {
-			for _, nested := range sym.Instances {
-				a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+			if sym.SymbolType == "bitmap" {
+				if img, ok := a.bitmapImageBySymbolID(sym.ID); ok {
+					ctx.Call("drawImage", img, 0, 0, sym.BitmapW, sym.BitmapH)
+				}
+			} else {
+				for _, nested := range sym.Instances {
+					a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+				}
 			}
 		}
 	}
@@ -3083,6 +3224,7 @@ func (a *App) loadDocumentJSONText(text string) error {
 	}
 	normalizeDocument(&doc)
 	a.doc = doc
+	a.syncBitmapAssets()
 	a.undoStack = nil
 	a.redoStack = nil
 	a.clearInstanceSelection()
@@ -3093,6 +3235,7 @@ func (a *App) loadDocumentJSONText(text string) error {
 }
 
 func (a *App) saveDocumentToDisk() error {
+	a.syncBitmapAssets()
 	data, err := json.MarshalIndent(a.doc, "", "  ")
 	if err != nil {
 		return err
@@ -3104,17 +3247,102 @@ func (a *App) saveDocumentToDisk() error {
 	blob := js.Global().Get("Blob").New([]any{u8}, map[string]any{
 		"type": "application/json",
 	})
-	url := js.Global().Get("URL").Call("createObjectURL", blob)
+	w := js.Global().Get("window")
+	if w.Truthy() && !w.Get("showSaveFilePicker").IsUndefined() {
+		opts := map[string]any{
+			"suggestedName": sanitizeFileName(a.doc.Name) + ".json",
+			"types": []any{
+				map[string]any{
+					"description": "JSON Documents",
+					"accept": map[string]any{
+						"application/json": []any{".json"},
+					},
+				},
+			},
+		}
+		pickerPromise := w.Call("showSaveFilePicker", opts)
+		saveThenCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) == 0 {
+				return nil
+			}
+			handle := args[0]
+			writeThenCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+				if len(args) == 0 {
+					return nil
+				}
+				writable := args[0]
+				writeDoneCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+					closeThenCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+						a.statusEl.Set("textContent", "Document saved")
+						return nil
+					})
+					closeCatchCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+						msg := "Unknown error"
+						if len(args) > 0 {
+							msg = args[0].String()
+						}
+						a.statusEl.Set("textContent", "Save failed: "+msg)
+						return nil
+					})
+					a.holdCallback(closeThenCb)
+					a.holdCallback(closeCatchCb)
+					writable.Call("close").Call("then", closeThenCb).Call("catch", closeCatchCb)
+					return nil
+				})
+				writeOpCatchCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+					msg := "Unknown error"
+					if len(args) > 0 {
+						msg = args[0].String()
+					}
+					a.statusEl.Set("textContent", "Save failed: "+msg)
+					return nil
+				})
+				a.holdCallback(writeDoneCb)
+				a.holdCallback(writeOpCatchCb)
+				writable.Call("write", blob).Call("then", writeDoneCb).Call("catch", writeOpCatchCb)
+				return nil
+			})
+			writeCatchCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+				msg := "Unknown error"
+				if len(args) > 0 {
+					msg = args[0].String()
+				}
+				a.statusEl.Set("textContent", "Save failed: "+msg)
+				return nil
+			})
+			a.holdCallback(writeThenCb)
+			a.holdCallback(writeCatchCb)
+			handle.Call("createWritable").Call("then", writeThenCb).Call("catch", writeCatchCb)
+			return nil
+		})
+		saveCatchCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			msg := "Save cancelled"
+			if len(args) > 0 {
+				name := args[0].Get("name").String()
+				if name != "AbortError" && args[0].String() != "" {
+					msg = "Save failed: " + args[0].String()
+				}
+			}
+			a.statusEl.Set("textContent", msg)
+			return nil
+		})
+		a.holdCallback(saveThenCb)
+		a.holdCallback(saveCatchCb)
+		pickerPromise.Call("then", saveThenCb).Call("catch", saveCatchCb)
+		a.statusEl.Set("textContent", "Choose where to save the document")
+		return nil
+	}
 
+	url := js.Global().Get("URL").Call("createObjectURL", blob)
 	d := js.Global().Get("document")
 	aEl := d.Call("createElement", "a")
 	aEl.Set("href", url)
 	aEl.Set("download", sanitizeFileName(a.doc.Name)+".json")
-
 	d.Get("body").Call("appendChild", aEl)
 	aEl.Call("click")
 	d.Get("body").Call("removeChild", aEl)
 	js.Global().Get("URL").Call("revokeObjectURL", url)
+	a.statusEl.Set("textContent", "Document downloaded as JSON")
 	return nil
 }
 
@@ -3151,6 +3379,105 @@ func (a *App) openDocumentFromDisk() error {
 		a.holdCallback(thenCb)
 		a.holdCallback(catchCb)
 		file.Call("text").Call("then", thenCb).Call("catch", catchCb)
+		return nil
+	})
+
+	a.holdCallback(changeCb)
+	input.Call("addEventListener", "change", changeCb)
+	input.Call("click")
+	return nil
+}
+
+func (a *App) importBitmapSymbol(name, bitmapData string, width, height float64) {
+	if width <= 0 || height <= 0 {
+		a.statusEl.Set("textContent", "Import failed: invalid image size")
+		return
+	}
+	symbolID := a.nextSymbolID()
+	symbolName := baseNameWithoutExt(name)
+	a.captureUndoSnapshot()
+	symbol := Symbol{
+		ID:         symbolID,
+		Name:       symbolName,
+		SymbolType: "bitmap",
+		BitmapData: bitmapData,
+		BitmapW:    width,
+		BitmapH:    height,
+		Instances:  []ElementInstance{},
+	}
+	a.doc.Symbols = append(a.doc.Symbols, symbol)
+	a.syncBitmapAssets()
+
+	layerIdx := a.targetLayerForImportedBitmap(symbolName)
+	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		return
+	}
+	layer := &a.doc.Layers[layerIdx]
+	kf := defaultKeyframeAt(a.curFrame)
+	kf.AnchorX = width / 2
+	kf.AnchorY = height / 2
+	kf.X = float64(a.doc.Width)/2 - kf.AnchorX
+	kf.Y = float64(a.doc.Height)/2 - kf.AnchorY
+	inst := ElementInstance{
+		ID:          fmt.Sprintf("%s-instance-%d", symbolID, len(layer.Instances)+1),
+		Name:        "",
+		Description: "Bitmap instance",
+		ElementType: "symbol",
+		ElementID:   symbolID,
+		Keyframes:   map[int]InstanceKeyframe{a.curFrame: kf},
+	}
+	layer.Instances = append([]ElementInstance{inst}, layer.Instances...)
+	a.setSingleInstanceSelection(layerIdx, 0)
+	a.selectedLibrarySymbolID = symbolID
+	a.updateSelectedLayerLabel()
+	a.updateLibraryPanel()
+	a.setRightPanelTab("library")
+	a.renderAll()
+	a.statusEl.Set("textContent", fmt.Sprintf("Imported image %s", symbolName))
+}
+
+func (a *App) importImageFromDisk() error {
+	d := js.Global().Get("document")
+	input := d.Call("createElement", "input")
+	input.Set("type", "file")
+	input.Set("accept", "image/*")
+
+	changeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		files := input.Get("files")
+		if !files.Truthy() || files.Length() == 0 {
+			return nil
+		}
+		file := files.Index(0)
+		reader := js.Global().Get("FileReader").New()
+		loadReaderCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			dataURL := reader.Get("result").String()
+			img := js.Global().Get("Image").New()
+			loadImgCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+				width := this.Get("naturalWidth").Float()
+				height := this.Get("naturalHeight").Float()
+				a.importBitmapSymbol(file.Get("name").String(), dataURL, width, height)
+				return nil
+			})
+			errorImgCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+				a.statusEl.Set("textContent", "Import failed: could not load image")
+				return nil
+			})
+			a.holdCallback(loadImgCb)
+			a.holdCallback(errorImgCb)
+			img.Call("addEventListener", "load", loadImgCb)
+			img.Call("addEventListener", "error", errorImgCb)
+			img.Set("src", dataURL)
+			return nil
+		})
+		errorReaderCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.statusEl.Set("textContent", "Import failed: could not read image")
+			return nil
+		})
+		a.holdCallback(loadReaderCb)
+		a.holdCallback(errorReaderCb)
+		reader.Call("addEventListener", "load", loadReaderCb)
+		reader.Call("addEventListener", "error", errorReaderCb)
+		reader.Call("readAsDataURL", file)
 		return nil
 	})
 
@@ -4794,6 +5121,7 @@ func (a *App) handleMenuAction(action string) {
 
 	case "file.new":
 		a.doc = newDefaultDocument()
+		a.syncBitmapAssets()
 		a.undoStack = nil
 		a.redoStack = nil
 		a.clearInstanceSelection()
@@ -4816,7 +5144,13 @@ func (a *App) handleMenuAction(action string) {
 			a.statusEl.Set("textContent", "Save failed: "+err.Error())
 			return
 		}
-		a.statusEl.Set("textContent", "Document downloaded as JSON")
+
+	case "file.importImage":
+		if err := a.importImageFromDisk(); err != nil {
+			a.statusEl.Set("textContent", "Import failed: "+err.Error())
+			return
+		}
+		a.statusEl.Set("textContent", "Choose an image to import")
 
 	case "file.export":
 		a.statusEl.Set("textContent", "Export requested")
