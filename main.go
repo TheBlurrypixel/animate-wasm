@@ -312,48 +312,60 @@ type App struct {
 	tlCanvas js.Value
 	tlCtx    js.Value
 
-	statusEl          js.Value
-	docSizeEl         js.Value
-	docFpsEl          js.Value
-	curFrameEl        js.Value
-	isPlayEl          js.Value
-	selNameEl         js.Value
-	selToolEl         js.Value
-	libraryListEl     js.Value
-	propertiesPanelEl js.Value
-	libraryPanelEl    js.Value
-	propName          js.Value
-	propPosX          js.Value
-	propPosY          js.Value
-	propScaleX        js.Value
-	propScaleY        js.Value
-	propSkewX         js.Value
-	propSkewY         js.Value
-	propRot           js.Value
-	propRotDec        js.Value
-	propRotInc        js.Value
-	propAncX          js.Value
-	propAncY          js.Value
-	propFill          js.Value
-	propStroke        js.Value
-	propStrokeW       js.Value
-	propEaseMode      js.Value
-	propEaseDir       js.Value
-	layerCtxMenu      js.Value
-	stageCtxMenu      js.Value
-	keyframeCtxMenu   js.Value
-	autoKeyBtn        js.Value
-	docDialog         js.Value
-	docDlgWidth       js.Value
-	docDlgHeight      js.Value
-	docDlgFps         js.Value
-	docDlgBg          js.Value
-	docDlgCancel      js.Value
-	docDlgSave        js.Value
-	settingsDialog    js.Value
-	settingsMaxUndo   js.Value
-	settingsDlgCancel js.Value
-	settingsDlgSave   js.Value
+	statusEl               js.Value
+	docSizeEl              js.Value
+	docFpsEl               js.Value
+	curFrameEl             js.Value
+	isPlayEl               js.Value
+	selNameEl              js.Value
+	selToolEl              js.Value
+	libraryListEl          js.Value
+	propertiesPanelEl      js.Value
+	libraryPanelEl         js.Value
+	propName               js.Value
+	propPosX               js.Value
+	propPosY               js.Value
+	propScaleX             js.Value
+	propScaleY             js.Value
+	propSkewX              js.Value
+	propSkewY              js.Value
+	propRot                js.Value
+	propRotDec             js.Value
+	propRotInc             js.Value
+	propAncX               js.Value
+	propAncY               js.Value
+	propFill               js.Value
+	propStroke             js.Value
+	propStrokeW            js.Value
+	propEaseMode           js.Value
+	propEaseDir            js.Value
+	layerCtxMenu           js.Value
+	stageCtxMenu           js.Value
+	keyframeCtxMenu        js.Value
+	autoKeyBtn             js.Value
+	docDialog              js.Value
+	docDlgWidth            js.Value
+	docDlgHeight           js.Value
+	docDlgFps              js.Value
+	docDlgBg               js.Value
+	docDlgCancel           js.Value
+	docDlgSave             js.Value
+	settingsDialog         js.Value
+	settingsMaxUndo        js.Value
+	settingsDlgCancel      js.Value
+	settingsDlgSave        js.Value
+	shapeToolBtn           js.Value
+	shapeToolIconEl        js.Value
+	shapeToolCorner        js.Value
+	shapeToolMenu          js.Value
+	toolFill               js.Value
+	toolStroke             js.Value
+	colorPickerPopover     js.Value
+	colorPickerPreview     js.Value
+	colorPickerPreviewText js.Value
+	colorPickerColor       js.Value
+	colorPickerAlpha       js.Value
+	colorPickerAlphaValue  js.Value
 
 	// timeline state
 	curFrame       int // 1-based
@@ -370,11 +382,26 @@ type App struct {
 	lastTick  time.Time
 	playAccum float64
 
-	drawingCircle bool
-	circleStartX  float64
-	circleStartY  float64
-	circleNowX    float64
-	circleNowY    float64
+	drawingCircle    bool
+	circleStartX     float64
+	circleStartY     float64
+	circleNowX       float64
+	circleNowY       float64
+	shapeSubtool     string
+	drawingShape     bool
+	shapeStartX      float64
+	shapeStartY      float64
+	shapeNowX        float64
+	shapeNowY        float64
+	shapeAsStar      bool
+	shapeFromCenter  bool
+	shapeUniform     bool
+	shapeSides       int
+	shapeToolFill    string
+	shapeToolStroke  string
+	activeColorField string
+	activeColorBtn   js.Value
+	colorPickerDirty bool
 
 	penEditing   bool
 	penPoints    []BezierPoint
@@ -578,6 +605,10 @@ func main() {
 	app := &App{
 		doc:                     newDefaultDocument(),
 		activeTool:              "select",
+		shapeSubtool:            "oval",
+		shapeSides:              5,
+		shapeToolFill:           "#66e3ff",
+		shapeToolStroke:         "#66e3ff",
 		curFrame:                1,
 		autoKey:                 true,
 		maxUndoChanges:          100,
@@ -669,10 +700,23 @@ func (a *App) initDOM() {
 	a.settingsMaxUndo = d.Call("getElementById", "settingsMaxUndo")
 	a.settingsDlgCancel = d.Call("getElementById", "settingsDialogCancel")
 	a.settingsDlgSave = d.Call("getElementById", "settingsDialogSave")
+	a.shapeToolBtn = d.Call("getElementById", "btn-square")
+	a.shapeToolIconEl = d.Call("getElementById", "shapeToolIcon")
+	a.shapeToolCorner = d.Call("getElementById", "shapeToolCorner")
+	a.shapeToolMenu = d.Call("getElementById", "shapeToolMenu")
+	a.toolFill = d.Call("getElementById", "toolFill")
+	a.toolStroke = d.Call("getElementById", "toolStroke")
+	a.colorPickerPopover = d.Call("getElementById", "colorPickerPopover")
+	a.colorPickerPreview = d.Call("getElementById", "colorPickerPreview")
+	a.colorPickerPreviewText = d.Call("getElementById", "colorPickerPreviewText")
+	a.colorPickerColor = d.Call("getElementById", "colorPickerColor")
+	a.colorPickerAlpha = d.Call("getElementById", "colorPickerAlpha")
+	a.colorPickerAlphaValue = d.Call("getElementById", "colorPickerAlphaValue")
 
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
 	a.updateAutoKeyUI()
+	a.updateShapeToolUI()
 }
 
 func (a *App) refreshDocUI() {
@@ -693,6 +737,64 @@ func (a *App) updateAutoKeyUI() {
 		a.autoKeyBtn.Get("classList").Call("add", "active")
 	} else {
 		a.autoKeyBtn.Get("classList").Call("remove", "active")
+	}
+}
+
+func (a *App) closeShapeToolMenu() {
+	if a.shapeToolMenu.Truthy() {
+		a.shapeToolMenu.Get("classList").Call("remove", "open")
+	}
+}
+
+func (a *App) openShapeToolMenu() {
+	if a.shapeToolMenu.Truthy() {
+		a.shapeToolMenu.Get("classList").Call("add", "open")
+	}
+}
+
+func (a *App) setShapeSubtool(subtool string) {
+	switch subtool {
+	case "oval":
+		a.shapeSubtool = "oval"
+	case "polygon":
+		a.shapeSubtool = "polygon"
+	default:
+		a.shapeSubtool = "rectangle"
+	}
+	a.updateShapeToolUI()
+}
+
+func (a *App) updateShapeToolUI() {
+	if a.shapeToolIconEl.Truthy() {
+		if a.shapeSubtool == "oval" {
+			a.shapeToolIconEl.Set("innerHTML", "&#x25EF;")
+		} else if a.shapeSubtool == "polygon" {
+			a.shapeToolIconEl.Set("innerHTML", "&#x2B20;")
+		} else {
+			a.shapeToolIconEl.Set("innerHTML", "&#x25AD;")
+		}
+	}
+	d := js.Global().Get("document")
+	if btn := d.Call("getElementById", "btn-shape"); btn.Truthy() {
+		if a.shapeSubtool == "oval" {
+			btn.Set("textContent", "Oval")
+		} else if a.shapeSubtool == "polygon" {
+			btn.Set("textContent", "Polygon")
+		} else {
+			btn.Set("textContent", "Rectangle")
+		}
+	}
+	if !a.shapeToolMenu.Truthy() {
+		return
+	}
+	items := a.shapeToolMenu.Call("querySelectorAll", "[data-shape-subtool]")
+	for i := 0; i < items.Length(); i++ {
+		item := items.Index(i)
+		if item.Get("dataset").Get("shapeSubtool").String() == a.shapeSubtool {
+			item.Get("classList").Call("add", "active")
+		} else {
+			item.Get("classList").Call("remove", "active")
+		}
 	}
 }
 
@@ -1247,6 +1349,171 @@ func (a *App) addCircleInstanceToSelectedLayers(circleID string, baseKeyframe In
 		inst.Keyframes[a.curFrame] = baseKeyframe
 		layer.Instances = append([]ElementInstance{inst}, layer.Instances...)
 	}
+}
+
+func bezierCornerPoint(x, y float64) BezierPoint {
+	return BezierPoint{
+		X:    x,
+		Y:    y,
+		InX:  x,
+		InY:  y,
+		OutX: x,
+		OutY: y,
+	}
+}
+
+func rectanglePathPoints(x0, y0, x1, y1 float64, fromCenter, uniform bool) ([]BezierPoint, float64, float64, bool) {
+	cx := (x0 + x1) / 2
+	cy := (y0 + y1) / 2
+	halfW := math.Abs(x1-x0) / 2
+	halfH := math.Abs(y1-y0) / 2
+	if fromCenter {
+		cx = x0
+		cy = y0
+		halfW = math.Abs(x1 - x0)
+		halfH = math.Abs(y1 - y0)
+	}
+	if uniform {
+		size := math.Max(halfW, halfH)
+		halfW = size
+		halfH = size
+	}
+	if halfW < 1 || halfH < 1 {
+		return nil, 0, 0, false
+	}
+	points := []BezierPoint{
+		bezierCornerPoint(-halfW, -halfH),
+		bezierCornerPoint(halfW, -halfH),
+		bezierCornerPoint(halfW, halfH),
+		bezierCornerPoint(-halfW, halfH),
+	}
+	return points, cx, cy, true
+}
+
+func ovalPathPoints(x0, y0, x1, y1 float64, fromCenter, uniform bool) ([]BezierPoint, float64, float64, bool) {
+	cx := (x0 + x1) / 2
+	cy := (y0 + y1) / 2
+	rx := math.Abs(x1-x0) / 2
+	ry := math.Abs(y1-y0) / 2
+	if fromCenter {
+		cx = x0
+		cy = y0
+		rx = math.Abs(x1 - x0)
+		ry = math.Abs(y1 - y0)
+	}
+	if uniform {
+		r := math.Max(rx, ry)
+		rx = r
+		ry = r
+	}
+	if rx < 1 || ry < 1 {
+		return nil, 0, 0, false
+	}
+	k := 0.5522847498307936
+	points := []BezierPoint{
+		{X: 0, Y: -ry, InX: -k * rx, InY: -ry, OutX: k * rx, OutY: -ry},
+		{X: rx, Y: 0, InX: rx, InY: -k * ry, OutX: rx, OutY: k * ry},
+		{X: 0, Y: ry, InX: k * rx, InY: ry, OutX: -k * rx, OutY: ry},
+		{X: -rx, Y: 0, InX: -rx, InY: k * ry, OutX: -rx, OutY: -k * ry},
+	}
+	return points, cx, cy, true
+}
+
+func polygonPathPoints(x0, y0, x1, y1 float64, sides int, star bool, fromCenter, uniform bool) ([]BezierPoint, float64, float64, bool) {
+	if sides < 3 {
+		sides = 3
+	}
+	if sides > 100 {
+		sides = 100
+	}
+	cx := (x0 + x1) / 2
+	cy := (y0 + y1) / 2
+	rx := math.Abs(x1-x0) / 2
+	ry := math.Abs(y1-y0) / 2
+	if fromCenter {
+		cx = x0
+		cy = y0
+		rx = math.Abs(x1 - x0)
+		ry = math.Abs(y1 - y0)
+	}
+	if uniform {
+		r := math.Max(rx, ry)
+		rx = r
+		ry = r
+	}
+	if rx < 2 || ry < 2 {
+		return nil, 0, 0, false
+	}
+	count := sides
+	if star {
+		count = sides * 2
+	}
+	points := make([]BezierPoint, 0, count)
+	innerScale := 0.45
+	for i := 0; i < count; i++ {
+		angle := -math.Pi/2 + (float64(i)*2*math.Pi)/float64(count)
+		scale := 1.0
+		if star && i%2 == 1 {
+			scale = innerScale
+		}
+		px := math.Cos(angle) * rx * scale
+		py := math.Sin(angle) * ry * scale
+		points = append(points, bezierCornerPoint(px, py))
+	}
+	return points, cx, cy, true
+}
+
+func (a *App) commitShapeDraft() {
+	if !a.drawingShape {
+		return
+	}
+	var (
+		points []BezierPoint
+		cx     float64
+		cy     float64
+		ok     bool
+	)
+	switch a.shapeSubtool {
+	case "oval":
+		points, cx, cy, ok = ovalPathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeFromCenter, a.shapeUniform)
+	case "polygon":
+		points, cx, cy, ok = polygonPathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeSides, a.shapeAsStar, a.shapeFromCenter, a.shapeUniform)
+	default:
+		points, cx, cy, ok = rectanglePathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeFromCenter, a.shapeUniform)
+	}
+	if !ok {
+		a.drawingShape = false
+		return
+	}
+	a.captureUndoSnapshot()
+	pathID := a.nextPathID()
+	path := VectorPath{
+		ID:      pathID,
+		Points:  points,
+		Stroke:  a.shapeToolStroke,
+		Fill:    a.shapeToolFill,
+		StrokeW: 2,
+		Closed:  true,
+	}
+	a.doc.Paths = append(a.doc.Paths, path)
+	kf := defaultKeyframeAt(a.curFrame)
+	kf.X = cx
+	kf.Y = cy
+	kf.AnchorX = 0
+	kf.AnchorY = 0
+	a.addPathInstanceToSelectedLayers(pathID, kf)
+	if a.shapeSubtool == "polygon" {
+		if a.shapeAsStar {
+			a.statusEl.Set("textContent", fmt.Sprintf("Star created with %d points", a.shapeSides))
+		} else {
+			a.statusEl.Set("textContent", fmt.Sprintf("Polygon created with %d sides", a.shapeSides))
+		}
+	} else if a.shapeSubtool == "oval" {
+		a.statusEl.Set("textContent", "Oval created")
+	} else {
+		a.statusEl.Set("textContent", "Rectangle created")
+	}
+	a.drawingShape = false
 }
 
 func resolveElementInstanceKeyframe(inst ElementInstance, frame int, totalFrames int) (InstanceKeyframe, bool) {
@@ -1911,6 +2178,12 @@ func dist(x1, y1, x2, y2 float64) float64 { return math.Hypot(x1-x2, y1-y2) }
 func normalizeHexColor(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	s = strings.ReplaceAll(s, " ", "")
+	if len(s) == 3 && !strings.HasPrefix(s, "#") {
+		s = "#" + s
+	}
+	if len(s) == 6 && !strings.HasPrefix(s, "#") {
+		s = "#" + s
+	}
 	if strings.HasPrefix(s, "#") {
 		if len(s) == 4 {
 			return fmt.Sprintf("#%c%c%c%c%c%c", s[1], s[1], s[2], s[2], s[3], s[3])
@@ -1931,6 +2204,149 @@ func normalizeHexColor(s string) string {
 		}
 	}
 	return "#66e3ff"
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func alphaFromColor(s string) float64 {
+	s = strings.TrimSpace(strings.ToLower(strings.ReplaceAll(s, " ", "")))
+	if strings.HasPrefix(s, "rgba(") {
+		var r, g, b int
+		var a float64
+		if _, err := fmt.Sscanf(s, "rgba(%d,%d,%d,%f)", &r, &g, &b, &a); err == nil {
+			return clamp01(a)
+		}
+	}
+	return 1
+}
+
+func colorWithAlpha(color string, alpha float64) string {
+	hex := normalizeHexColor(color)
+	alpha = clamp01(alpha)
+	var r, g, b int
+	if _, err := fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b); err != nil {
+		return hex
+	}
+	if alpha >= 0.999 {
+		return hex
+	}
+	return fmt.Sprintf("rgba(%d, %d, %d, %.3f)", r, g, b, alpha)
+}
+
+func setColorPickerButtonAppearance(el js.Value, color string) {
+	if !el.Truthy() {
+		return
+	}
+	hex := normalizeHexColor(color)
+	alpha := alphaFromColor(color)
+	var r, g, b int
+	if _, err := fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b); err == nil {
+		brightness := (0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)) / 255.0
+		if brightness > 0.5 {
+			el.Get("style").Set("color", "#000000")
+		} else {
+			el.Get("style").Set("color", "#ffffff")
+		}
+	}
+	el.Set("textContent", fmt.Sprintf("%s  %d%%", strings.ToUpper(hex), int(math.Round(alpha*100))))
+	el.Get("style").Set("background", colorWithAlpha(hex, alpha))
+}
+
+func setColorPreviewAppearance(el js.Value, color string) {
+	if !el.Truthy() {
+		return
+	}
+	hex := normalizeHexColor(color)
+	alpha := alphaFromColor(color)
+	el.Set("textContent", "")
+	el.Get("style").Set("background", colorWithAlpha(hex, alpha))
+}
+
+func (a *App) closeColorPicker() {
+	if a.colorPickerPopover.Truthy() {
+		a.colorPickerPopover.Get("classList").Call("remove", "open")
+	}
+	a.activeColorField = ""
+	a.activeColorBtn = js.Null()
+	a.colorPickerDirty = false
+}
+
+func (a *App) openColorPicker(field string, btn js.Value, color string) {
+	if !btn.Truthy() || !a.colorPickerPopover.Truthy() {
+		return
+	}
+	a.activeColorField = field
+	a.activeColorBtn = btn
+	a.colorPickerDirty = false
+	hex := normalizeHexColor(color)
+	alpha := alphaFromColor(color)
+	a.colorPickerColor.Set("value", hex)
+	a.colorPickerAlpha.Set("value", fmt.Sprintf("%.2f", alpha))
+	a.colorPickerAlphaValue.Set("value", fmt.Sprintf("%.2f", alpha))
+	a.syncColorPickerPreview()
+	rect := btn.Call("getBoundingClientRect")
+	left := rect.Get("left").Float()
+	top := rect.Get("bottom").Float() + 6
+	a.colorPickerPopover.Get("style").Set("left", fmt.Sprintf("%.0fpx", left))
+	a.colorPickerPopover.Get("style").Set("top", fmt.Sprintf("%.0fpx", top))
+	a.colorPickerPopover.Get("classList").Call("add", "open")
+}
+
+func (a *App) syncColorPickerPreview() {
+	if !a.colorPickerPreview.Truthy() {
+		return
+	}
+	color := a.currentPickerColor()
+	setColorPreviewAppearance(a.colorPickerPreview, color)
+	if a.colorPickerPreviewText.Truthy() {
+		hex := normalizeHexColor(color)
+		a.colorPickerPreviewText.Set("value", strings.ToUpper(hex))
+	}
+}
+
+func (a *App) applyColorPickerHexInput(raw string) {
+	hex := normalizeHexColor(raw)
+	a.colorPickerColor.Set("value", hex)
+	a.applyActiveColorPicker()
+}
+
+func (a *App) currentPickerColor() string {
+	alpha, err := strconv.ParseFloat(strings.TrimSpace(a.colorPickerAlphaValue.Get("value").String()), 64)
+	if err != nil {
+		alpha = a.colorPickerAlpha.Get("valueAsNumber").Float()
+	}
+	return colorWithAlpha(a.colorPickerColor.Get("value").String(), alpha)
+}
+
+func (a *App) applyActiveColorPicker() {
+	if a.activeColorField == "" {
+		return
+	}
+	alpha, err := strconv.ParseFloat(strings.TrimSpace(a.colorPickerAlphaValue.Get("value").String()), 64)
+	if err != nil {
+		alpha = a.colorPickerAlpha.Get("valueAsNumber").Float()
+	}
+	alpha = clamp01(alpha)
+	a.colorPickerAlpha.Set("value", fmt.Sprintf("%.2f", alpha))
+	a.colorPickerAlphaValue.Set("value", fmt.Sprintf("%.2f", alpha))
+	switch a.activeColorField {
+	case "toolFill":
+		a.shapeToolFill = colorWithAlpha(a.colorPickerColor.Get("value").String(), alpha)
+	case "toolStroke":
+		a.shapeToolStroke = colorWithAlpha(a.colorPickerColor.Get("value").String(), alpha)
+	default:
+		a.applyShapePaint(a.activeColorField, a.colorPickerColor.Get("value").String(), alpha)
+	}
+	a.colorPickerDirty = true
+	a.syncColorPickerPreview()
 }
 
 func (a *App) applyTransformField(field string, value float64) {
@@ -1975,8 +2391,9 @@ func (a *App) applyInstanceName(value string) {
 	a.updatePropertiesPanel()
 }
 
-func (a *App) applyShapeColor(field, color string) {
-	color = normalizeHexColor(color)
+func (a *App) applyShapePaint(field, color string, alpha float64) {
+	base := normalizeHexColor(color)
+	alpha = clamp01(alpha)
 	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
@@ -1988,9 +2405,9 @@ func (a *App) applyShapeColor(field, color string) {
 					continue
 				}
 				if field == "fill" {
-					a.doc.Paths[pi].Fill = color
+					a.doc.Paths[pi].Fill = colorWithAlpha(base, alpha)
 				} else {
-					a.doc.Paths[pi].Stroke = color
+					a.doc.Paths[pi].Stroke = colorWithAlpha(base, alpha)
 				}
 				break
 			}
@@ -2000,9 +2417,9 @@ func (a *App) applyShapeColor(field, color string) {
 					continue
 				}
 				if field == "fill" {
-					a.doc.Circles[ci].Fill = color
+					a.doc.Circles[ci].Fill = colorWithAlpha(base, alpha)
 				} else {
-					a.doc.Circles[ci].Stroke = color
+					a.doc.Circles[ci].Stroke = colorWithAlpha(base, alpha)
 				}
 				break
 			}
@@ -2010,8 +2427,74 @@ func (a *App) applyShapeColor(field, color string) {
 	}
 }
 
+func (a *App) applyShapeColor(field, color string) {
+	alpha := 1.0
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		inst := a.doc.Layers[li].Instances[ii]
+		if inst.ElementType == "path" {
+			if p, ok := a.findPathByID(inst.ElementID); ok {
+				if field == "fill" {
+					alpha = alphaFromColor(p.Fill)
+				} else {
+					alpha = alphaFromColor(p.Stroke)
+				}
+				break
+			}
+		}
+		if inst.ElementType == "circle" {
+			if c, ok := a.findCircleByID(inst.ElementID); ok {
+				if field == "fill" {
+					alpha = alphaFromColor(c.Fill)
+				} else {
+					alpha = alphaFromColor(c.Stroke)
+				}
+				break
+			}
+		}
+	}
+	a.applyShapePaint(field, color, alpha)
+}
+
+func (a *App) applyShapeAlpha(field string, alpha float64) {
+	base := "#66e3ff"
+	for _, pair := range a.selectedInstancePairsOrPrimary() {
+		li, ii := pair[0], pair[1]
+		inst := a.doc.Layers[li].Instances[ii]
+		if inst.ElementType == "path" {
+			if p, ok := a.findPathByID(inst.ElementID); ok {
+				if field == "fill" {
+					base = normalizeHexColor(p.Fill)
+				} else {
+					base = normalizeHexColor(p.Stroke)
+				}
+				break
+			}
+		}
+		if inst.ElementType == "circle" {
+			if c, ok := a.findCircleByID(inst.ElementID); ok {
+				if field == "fill" {
+					base = normalizeHexColor(c.Fill)
+				} else {
+					base = normalizeHexColor(c.Stroke)
+				}
+				break
+			}
+		}
+	}
+	a.applyShapePaint(field, base, alpha)
+}
+
 func (a *App) applyShapeNumeric(field string, value float64) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return
+	}
+	if field == "fillAlpha" {
+		a.applyShapeAlpha("fill", value)
+		return
+	}
+	if field == "strokeAlpha" {
+		a.applyShapeAlpha("stroke", value)
 		return
 	}
 	if field == "strokeW" && value < 0 {
@@ -2108,7 +2591,7 @@ func (a *App) updatePropertiesPanel() {
 		a.propName.Set("disabled", !hasSel)
 	}
 	transformControls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY}
-	shapeControls := []js.Value{a.propFill, a.propStroke, a.propStrokeW}
+	shapeControls := []js.Value{a.propFill, a.propStroke, a.propStrokeW, a.toolFill, a.toolStroke}
 	tweenControls := []js.Value{a.propEaseMode, a.propEaseDir}
 	for _, c := range append(append(transformControls, shapeControls...), tweenControls...) {
 		if !c.Truthy() {
@@ -2118,14 +2601,22 @@ func (a *App) updatePropertiesPanel() {
 	}
 	if !hasSel {
 		if a.propName.Truthy() {
-			a.propName.Set("value", "")
+			setInputValueIfUnfocused(a.propName, "")
 		}
+		if a.toolFill.Truthy() {
+			a.toolFill.Set("disabled", false)
+		}
+		if a.toolStroke.Truthy() {
+			a.toolStroke.Set("disabled", false)
+		}
+		setColorPickerButtonAppearance(a.toolFill, a.shapeToolFill)
+		setColorPickerButtonAppearance(a.toolStroke, a.shapeToolStroke)
 		return
 	}
 
 	inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 	if a.propName.Truthy() {
-		a.propName.Set("value", inst.Name)
+		setInputValueIfUnfocused(a.propName, inst.Name)
 	}
 	kf, exact := a.getExactInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame)
 	for _, c := range transformControls {
@@ -2134,42 +2625,50 @@ func (a *App) updatePropertiesPanel() {
 		}
 	}
 	if exact {
-		a.propPosX.Set("value", fmt.Sprintf("%.2f", kf.X))
-		a.propPosY.Set("value", fmt.Sprintf("%.2f", kf.Y))
-		a.propScaleX.Set("value", fmt.Sprintf("%.3f", kf.ScaleX))
-		a.propScaleY.Set("value", fmt.Sprintf("%.3f", kf.ScaleY))
-		a.propSkewX.Set("value", fmt.Sprintf("%.3f", kf.SkewX))
-		a.propSkewY.Set("value", fmt.Sprintf("%.3f", kf.SkewY))
-		a.propRot.Set("value", fmt.Sprintf("%.3f", kf.Rotation))
-		a.propAncX.Set("value", fmt.Sprintf("%.2f", kf.AnchorX))
-		a.propAncY.Set("value", fmt.Sprintf("%.2f", kf.AnchorY))
+		setInputValueIfUnfocused(a.propPosX, fmt.Sprintf("%.2f", kf.X))
+		setInputValueIfUnfocused(a.propPosY, fmt.Sprintf("%.2f", kf.Y))
+		setInputValueIfUnfocused(a.propScaleX, fmt.Sprintf("%.3f", kf.ScaleX))
+		setInputValueIfUnfocused(a.propScaleY, fmt.Sprintf("%.3f", kf.ScaleY))
+		setInputValueIfUnfocused(a.propSkewX, fmt.Sprintf("%.3f", kf.SkewX))
+		setInputValueIfUnfocused(a.propSkewY, fmt.Sprintf("%.3f", kf.SkewY))
+		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation))
+		setInputValueIfUnfocused(a.propAncX, fmt.Sprintf("%.2f", kf.AnchorX))
+		setInputValueIfUnfocused(a.propAncY, fmt.Sprintf("%.2f", kf.AnchorY))
 	} else if kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame); ok {
-		a.propPosX.Set("value", fmt.Sprintf("%.2f", kf.X))
-		a.propPosY.Set("value", fmt.Sprintf("%.2f", kf.Y))
-		a.propScaleX.Set("value", fmt.Sprintf("%.3f", kf.ScaleX))
-		a.propScaleY.Set("value", fmt.Sprintf("%.3f", kf.ScaleY))
-		a.propSkewX.Set("value", fmt.Sprintf("%.3f", kf.SkewX))
-		a.propSkewY.Set("value", fmt.Sprintf("%.3f", kf.SkewY))
-		a.propRot.Set("value", fmt.Sprintf("%.3f", kf.Rotation))
-		a.propAncX.Set("value", fmt.Sprintf("%.2f", kf.AnchorX))
-		a.propAncY.Set("value", fmt.Sprintf("%.2f", kf.AnchorY))
+		setInputValueIfUnfocused(a.propPosX, fmt.Sprintf("%.2f", kf.X))
+		setInputValueIfUnfocused(a.propPosY, fmt.Sprintf("%.2f", kf.Y))
+		setInputValueIfUnfocused(a.propScaleX, fmt.Sprintf("%.3f", kf.ScaleX))
+		setInputValueIfUnfocused(a.propScaleY, fmt.Sprintf("%.3f", kf.ScaleY))
+		setInputValueIfUnfocused(a.propSkewX, fmt.Sprintf("%.3f", kf.SkewX))
+		setInputValueIfUnfocused(a.propSkewY, fmt.Sprintf("%.3f", kf.SkewY))
+		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation))
+		setInputValueIfUnfocused(a.propAncX, fmt.Sprintf("%.2f", kf.AnchorX))
+		setInputValueIfUnfocused(a.propAncY, fmt.Sprintf("%.2f", kf.AnchorY))
 	}
 	shape := inst.ElementType == "path" || inst.ElementType == "circle"
 	a.propFill.Set("disabled", !shape)
 	a.propStroke.Set("disabled", !shape)
 	a.propStrokeW.Set("disabled", !shape)
+	if a.toolFill.Truthy() {
+		a.toolFill.Set("disabled", false)
+	}
+	if a.toolStroke.Truthy() {
+		a.toolStroke.Set("disabled", false)
+	}
+	setColorPickerButtonAppearance(a.toolFill, a.shapeToolFill)
+	setColorPickerButtonAppearance(a.toolStroke, a.shapeToolStroke)
 	if inst.ElementType == "path" {
 		if p, ok := a.findPathByID(inst.ElementID); ok {
-			a.propFill.Set("value", normalizeHexColor(p.Fill))
-			a.propStroke.Set("value", normalizeHexColor(p.Stroke))
-			a.propStrokeW.Set("value", fmt.Sprintf("%.2f", p.StrokeW))
+			setColorPickerButtonAppearance(a.propFill, p.Fill)
+			setColorPickerButtonAppearance(a.propStroke, p.Stroke)
+			setInputValueIfUnfocused(a.propStrokeW, fmt.Sprintf("%.2f", p.StrokeW))
 		}
 	}
 	if inst.ElementType == "circle" {
 		if c, ok := a.findCircleByID(inst.ElementID); ok {
-			a.propFill.Set("value", normalizeHexColor(c.Fill))
-			a.propStroke.Set("value", normalizeHexColor(c.Stroke))
-			a.propStrokeW.Set("value", fmt.Sprintf("%.2f", c.StrokeW))
+			setColorPickerButtonAppearance(a.propFill, c.Fill)
+			setColorPickerButtonAppearance(a.propStroke, c.Stroke)
+			setInputValueIfUnfocused(a.propStrokeW, fmt.Sprintf("%.2f", c.StrokeW))
 		}
 	}
 	hasTween := a.selectedTweenLayerIdx == a.selectedLayerIdx &&
@@ -2180,10 +2679,24 @@ func (a *App) updatePropertiesPanel() {
 	a.propEaseDir.Set("disabled", !hasTween)
 	if hasTween {
 		if tweenKF, ok := a.selectedTweenKeyframe(); ok {
-			a.propEaseMode.Set("value", normalizeEaseMode(tweenKF.EaseMode))
-			a.propEaseDir.Set("value", normalizeEaseDir(tweenKF.EaseDir))
+			setInputValueIfUnfocused(a.propEaseMode, normalizeEaseMode(tweenKF.EaseMode))
+			setInputValueIfUnfocused(a.propEaseDir, normalizeEaseDir(tweenKF.EaseDir))
 		}
 	}
+}
+
+func setInputValueIfUnfocused(el js.Value, value string) {
+	if !el.Truthy() {
+		return
+	}
+	d := js.Global().Get("document")
+	if d.Truthy() {
+		active := d.Get("activeElement")
+		if active.Truthy() && active.Equal(el) {
+			return
+		}
+	}
+	el.Set("value", value)
 }
 
 func drawPathLocal(ctx js.Value, p VectorPath) {
@@ -2623,6 +3136,7 @@ func (a *App) bindUI() {
 		b := btns.Index(i)
 		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
 			tool := this.Get("dataset").Get("tool").String()
+			a.closeShapeToolMenu()
 			a.setActiveTool(tool)
 			return nil
 		})
@@ -2635,11 +3149,46 @@ func (a *App) bindUI() {
 		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
 			tool := this.Get("dataset").Get("tool").String()
 			if tool != "" {
+				a.closeShapeToolMenu()
 				a.setActiveTool(tool)
 			}
 			return nil
 		})
 		b.Call("addEventListener", "click", cb)
+	}
+	if a.shapeToolCorner.Truthy() {
+		shapeCornerCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) > 0 {
+				args[0].Call("preventDefault")
+				args[0].Call("stopPropagation")
+			}
+			if a.shapeToolMenu.Truthy() && a.shapeToolMenu.Get("classList").Call("contains", "open").Bool() {
+				a.closeShapeToolMenu()
+			} else {
+				a.openShapeToolMenu()
+			}
+			return nil
+		})
+		a.holdCallback(shapeCornerCb)
+		a.shapeToolCorner.Call("addEventListener", "click", shapeCornerCb)
+	}
+	if a.shapeToolMenu.Truthy() {
+		shapeItems := a.shapeToolMenu.Call("querySelectorAll", "[data-shape-subtool]")
+		for i := 0; i < shapeItems.Length(); i++ {
+			item := shapeItems.Index(i)
+			cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+				if len(args) > 0 {
+					args[0].Call("preventDefault")
+					args[0].Call("stopPropagation")
+				}
+				a.setShapeSubtool(this.Get("dataset").Get("shapeSubtool").String())
+				a.closeShapeToolMenu()
+				a.setActiveTool("shape")
+				return nil
+			})
+			a.holdCallback(cb)
+			item.Call("addEventListener", "click", cb)
+		}
 	}
 	tabs := d.Call("querySelectorAll", ".tab")
 	for i := 0; i < tabs.Length(); i++ {
@@ -2680,16 +3229,6 @@ func (a *App) bindUI() {
 			return nil
 		})
 		a.holdCallback(cb)
-		el.Call("addEventListener", "input", cb)
-		el.Call("addEventListener", "change", cb)
-	}
-	bindColor := func(el js.Value, field string) {
-		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
-			a.applyShapeColor(field, this.Get("value").String())
-			return nil
-		})
-		a.holdCallback(cb)
-		el.Call("addEventListener", "input", cb)
 		el.Call("addEventListener", "change", cb)
 	}
 	bindShapeNum := func(el js.Value, field string) {
@@ -2702,7 +3241,6 @@ func (a *App) bindUI() {
 			return nil
 		})
 		a.holdCallback(cb)
-		el.Call("addEventListener", "input", cb)
 		el.Call("addEventListener", "change", cb)
 	}
 	bindNum(a.propPosX, "x")
@@ -2714,15 +3252,105 @@ func (a *App) bindUI() {
 	bindNum(a.propRot, "rotation")
 	bindNum(a.propAncX, "anchorX")
 	bindNum(a.propAncY, "anchorY")
-	bindColor(a.propFill, "fill")
-	bindColor(a.propStroke, "stroke")
 	bindShapeNum(a.propStrokeW, "strokeW")
+	openPicker := func(btn js.Value, field string) {
+		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) > 0 {
+				args[0].Call("preventDefault")
+				args[0].Call("stopPropagation")
+			}
+			color := "#66e3ff"
+			switch field {
+			case "toolFill":
+				color = a.shapeToolFill
+			case "toolStroke":
+				color = a.shapeToolStroke
+			default:
+				for _, pair := range a.selectedInstancePairsOrPrimary() {
+					li, ii := pair[0], pair[1]
+					inst := a.doc.Layers[li].Instances[ii]
+					if inst.ElementType == "path" {
+						if p, ok := a.findPathByID(inst.ElementID); ok {
+							if field == "fill" {
+								color = p.Fill
+							} else {
+								color = p.Stroke
+							}
+							break
+						}
+					}
+					if inst.ElementType == "circle" {
+						if c, ok := a.findCircleByID(inst.ElementID); ok {
+							if field == "fill" {
+								color = c.Fill
+							} else {
+								color = c.Stroke
+							}
+							break
+						}
+					}
+				}
+			}
+			a.openColorPicker(field, btn, color)
+			return nil
+		})
+		a.holdCallback(cb)
+		btn.Call("addEventListener", "click", cb)
+	}
+	openPicker(a.propFill, "fill")
+	openPicker(a.propStroke, "stroke")
+	openPicker(a.toolFill, "toolFill")
+	openPicker(a.toolStroke, "toolStroke")
+	colorPickerStopCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			args[0].Call("stopPropagation")
+		}
+		return nil
+	})
+	colorPickerInputCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyActiveColorPicker()
+		return nil
+	})
+	alphaMirrorCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.colorPickerAlphaValue.Set("value", this.Get("value").String())
+		a.applyActiveColorPicker()
+		return nil
+	})
+	alphaNumberCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.colorPickerAlpha.Set("value", this.Get("value").String())
+		a.applyActiveColorPicker()
+		return nil
+	})
+	a.holdCallback(colorPickerStopCb)
+	a.holdCallback(colorPickerInputCb)
+	a.holdCallback(alphaMirrorCb)
+	a.holdCallback(alphaNumberCb)
+	a.colorPickerPopover.Call("addEventListener", "click", colorPickerStopCb)
+	a.colorPickerColor.Call("addEventListener", "input", colorPickerInputCb)
+	a.colorPickerColor.Call("addEventListener", "change", colorPickerInputCb)
+	a.colorPickerAlpha.Call("addEventListener", "input", alphaMirrorCb)
+	a.colorPickerAlpha.Call("addEventListener", "change", alphaMirrorCb)
+	a.colorPickerAlphaValue.Call("addEventListener", "change", alphaNumberCb)
+	hexInputChangeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyColorPickerHexInput(this.Get("value").String())
+		return nil
+	})
+	hexInputKeyCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 && args[0].Get("key").String() == "Enter" {
+			a.applyColorPickerHexInput(this.Get("value").String())
+			this.Call("blur")
+		}
+		return nil
+	})
+	a.holdCallback(hexInputChangeCb)
+	a.holdCallback(hexInputKeyCb)
+	a.colorPickerPreviewText.Call("addEventListener", "change", hexInputChangeCb)
+	a.colorPickerPreviewText.Call("addEventListener", "keydown", hexInputKeyCb)
 	nameCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applyInstanceName(this.Get("value").String())
 		return nil
 	})
 	a.holdCallback(nameCb)
-	a.propName.Call("addEventListener", "input", nameCb)
 	a.propName.Call("addEventListener", "change", nameCb)
 	easeModeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applySelectedTweenEase(this.Get("value").String(), a.propEaseDir.Get("value").String())
@@ -2932,8 +3560,18 @@ func (a *App) bindUI() {
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
 		a.closeKeyframeContextMenu()
+		a.closeShapeToolMenu()
+		a.closeColorPicker()
 		return nil
 	}))
+	if appEl := d.Call("getElementById", "app"); appEl.Truthy() {
+		appEl.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) > 0 {
+				args[0].Call("preventDefault")
+			}
+			return nil
+		}))
+	}
 	d.Call("addEventListener", "mousemove", js.FuncOf(func(this js.Value, args []js.Value) any {
 		if a.dragLibrarySymbolID == "" {
 			return nil
@@ -2951,6 +3589,10 @@ func (a *App) bindUI() {
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
 		a.closeKeyframeContextMenu()
+		if key == "Escape" {
+			a.closeShapeToolMenu()
+			a.closeColorPicker()
+		}
 		if a.docDialog.Truthy() && a.docDialog.Get("classList").Call("contains", "open").Bool() {
 			if key == "Escape" {
 				e.Call("preventDefault")
@@ -2998,6 +3640,22 @@ func (a *App) bindUI() {
 		if key == "Enter" && a.activeTool == "pencil" && len(a.penPoints) >= 2 {
 			e.Call("preventDefault")
 			a.commitPenPath(false)
+		}
+		if a.activeTool == "shape" && a.drawingShape && a.shapeSubtool == "polygon" {
+			if key == "+" || key == "=" {
+				e.Call("preventDefault")
+				if a.shapeSides < 100 {
+					a.shapeSides++
+				}
+				return nil
+			}
+			if key == "-" || key == "_" {
+				e.Call("preventDefault")
+				if a.shapeSides > 3 {
+					a.shapeSides--
+				}
+				return nil
+			}
 		}
 		if key == "Escape" && a.activeTool == "pencil" && a.penEditing {
 			e.Call("preventDefault")
@@ -3130,6 +3788,7 @@ func (a *App) bindUI() {
 		x := e.Get("offsetX").Float()
 		y := e.Get("offsetY").Float()
 		a.closeStageContextMenu()
+		a.closeShapeToolMenu()
 
 		switch a.activeTool {
 		case "select":
@@ -3261,12 +3920,15 @@ func (a *App) bindUI() {
 				a.beginHistoryBatch()
 				a.dragMode = "subselect"
 			}
-		case "circle":
-			a.circleStartX = x
-			a.circleStartY = y
-			a.circleNowX = x
-			a.circleNowY = y
-			a.drawingCircle = true
+		case "shape":
+			a.shapeStartX = x
+			a.shapeStartY = y
+			a.shapeNowX = x
+			a.shapeNowY = y
+			a.shapeAsStar = e.Get("ctrlKey").Bool()
+			a.shapeFromCenter = e.Get("altKey").Bool()
+			a.shapeUniform = e.Get("shiftKey").Bool()
+			a.drawingShape = true
 		case "pencil":
 			a.penMouseX = x
 			a.penMouseY = y
@@ -3300,6 +3962,13 @@ func (a *App) bindUI() {
 		if a.marqueeActive {
 			a.marqueeNowX = x
 			a.marqueeNowY = y
+		}
+
+		if a.drawingShape {
+			a.shapeNowX = x
+			a.shapeNowY = y
+			a.shapeFromCenter = e.Get("altKey").Bool()
+			a.shapeUniform = e.Get("shiftKey").Bool()
 		}
 
 		if a.dragMode != "" && len(a.selectedInstancePairs()) > 0 {
@@ -3381,10 +4050,6 @@ func (a *App) bindUI() {
 				}
 			}
 		}
-		if a.drawingCircle {
-			a.circleNowX = x
-			a.circleNowY = y
-		}
 		if a.activeTool == "pencil" {
 			a.penMouseX = x
 			a.penMouseY = y
@@ -3444,31 +4109,8 @@ func (a *App) bindUI() {
 			a.marqueeActive = false
 			a.updateSelectedLayerLabel()
 		}
-		if a.drawingCircle {
-			a.circleNowX = x
-			a.circleNowY = y
-			r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
-			if r >= 2 {
-				a.captureUndoSnapshot()
-				circleID := a.nextCircleID()
-				a.doc.Circles = append(a.doc.Circles, VectorCircle{
-					ID:      circleID,
-					CX:      0,
-					CY:      0,
-					Radius:  r,
-					Fill:    "rgba(255, 204, 102, 0.35)",
-					Stroke:  "#ffcc66",
-					StrokeW: 2,
-				})
-				kf := defaultKeyframeAt(a.curFrame)
-				kf.X = a.circleStartX
-				kf.Y = a.circleStartY
-				kf.AnchorX = 0
-				kf.AnchorY = 0
-				a.addCircleInstanceToSelectedLayers(circleID, kf)
-				a.statusEl.Set("textContent", "Circle created")
-			}
-			a.drawingCircle = false
+		if a.drawingShape {
+			a.commitShapeDraft()
 		}
 		if a.penMouseDown {
 			a.penMouseDown = false
@@ -3486,6 +4128,9 @@ func (a *App) setActiveTool(tool string) {
 	d := js.Global().Get("document")
 	if a.activeTool == "pencil" && tool != "pencil" && a.penEditing {
 		a.clearPenDraft()
+	}
+	if a.activeTool == "shape" && tool != "shape" {
+		a.drawingShape = false
 	}
 	a.activeTool = tool
 
@@ -3513,18 +4158,25 @@ func (a *App) setActiveTool(tool string) {
 		"subselect": "Subselection",
 		"transform": "Transform",
 		"text":      "Text",
-		"shape":     "Shape",
 		"pencil":    "Pencil",
-		"circle":    "Circle",
 		"line":      "Line",
 		"tween":     "Classic Tween",
 		"action":    "Action Script",
 	}[tool]
+	if tool == "shape" {
+		if a.shapeSubtool == "oval" {
+			name = "Shape: Oval"
+		} else if a.shapeSubtool == "polygon" {
+			name = "Shape: Polygon"
+		} else {
+			name = "Shape: Rectangle"
+		}
+	}
 	if name == "" {
 		name = tool
 	}
 	a.selToolEl.Set("textContent", name)
-	if tool == "circle" || tool == "pencil" {
+	if tool == "shape" || tool == "pencil" {
 		a.stageCanvas.Get("style").Set("cursor", "crosshair")
 	} else {
 		a.stageCanvas.Get("style").Set("cursor", "default")
@@ -3635,17 +4287,46 @@ func (a *App) renderStage() {
 		}
 	}
 
-	// in-progress circle preview
-	if a.drawingCircle {
-		r := math.Hypot(a.circleNowX-a.circleStartX, a.circleNowY-a.circleStartY)
-		ctx.Set("fillStyle", "rgba(255, 255, 255, 0.18)")
-		ctx.Call("beginPath")
-		ctx.Call("arc", a.circleStartX, a.circleStartY, r, 0, math.Pi*2)
-		ctx.Call("fill")
-		ctx.Set("lineWidth", 1.5)
-		ctx.Set("strokeStyle", "rgba(255, 255, 255, 0.9)")
-		ctx.Call("stroke")
+	if a.drawingShape {
+		var (
+			preview []BezierPoint
+			cx      float64
+			cy      float64
+		)
+		switch a.shapeSubtool {
+		case "oval":
+			if pts, px, py, ok := ovalPathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeFromCenter, a.shapeUniform); ok {
+				preview = pts
+				cx = px
+				cy = py
+			}
+		case "polygon":
+			if pts, px, py, ok := polygonPathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeSides, a.shapeAsStar, a.shapeFromCenter, a.shapeUniform); ok {
+				preview = pts
+				cx = px
+				cy = py
+			}
+		default:
+			if pts, px, py, ok := rectanglePathPoints(a.shapeStartX, a.shapeStartY, a.shapeNowX, a.shapeNowY, a.shapeFromCenter, a.shapeUniform); ok {
+				preview = pts
+				cx = px
+				cy = py
+			}
+		}
+		if len(preview) >= 3 {
+			ctx.Call("save")
+			ctx.Call("translate", cx, cy)
+			drawPathLocal(ctx, VectorPath{
+				Points:  preview,
+				Stroke:  "#66e3ff",
+				Fill:    "rgba(102, 227, 255, 0.25)",
+				StrokeW: 2,
+				Closed:  true,
+			})
+			ctx.Call("restore")
+		}
 	}
+
 	if a.penEditing && len(a.penPoints) >= 1 {
 		ctx.Call("beginPath")
 		ctx.Call("moveTo", a.penPoints[0].X, a.penPoints[0].Y)

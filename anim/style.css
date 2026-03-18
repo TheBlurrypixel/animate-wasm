@@ -144,6 +144,10 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 .menuItem:hover{
   background:#3a3f45;
 }
+.menuItem.active{
+  background:#3a3f45;
+  color:var(--accent);
+}
 
 .menuDivider{
   height:1px;
@@ -192,10 +196,139 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 }
 
 .toolcol{ display:flex; flex-direction:column; gap:8px; padding:10px; }
+.toolColors{
+  border-top:1px solid var(--line);
+  padding:10px;
+  display:grid;
+  gap:8px;
+}
+.toolColorsTitle{
+  color:var(--muted);
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.toolColorField{
+  display:grid;
+  gap:4px;
+}
+.toolColorLabel{
+  color:var(--muted);
+  font-size:11px;
+}
+.toolColorInput{
+  max-width:none;
+}
+.colorPickerBtn{
+  width:100%;
+  min-height:30px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#1c1e21;
+  color:var(--text);
+  cursor:pointer;
+  font:12px/1.1 system-ui;
+  padding:6px 8px;
+  text-align:left;
+}
+.colorPickerBtn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+.colorPopover{
+  position:fixed;
+  top:0;
+  left:0;
+  min-width:220px;
+  display:none;
+  gap:10px;
+  padding:12px;
+  background:var(--panel2);
+  border:1px solid var(--line);
+  border-radius:12px;
+  box-shadow:0 10px 30px rgba(0,0,0,.35);
+  z-index:1300;
+}
+.colorPopover.open{
+  display:grid;
+}
+.colorPopoverPreviewWrap{
+  display:grid;
+  gap:6px;
+}
+.colorPopoverPreview{
+  height:34px;
+  border-radius:8px;
+  border:1px solid var(--line);
+  background:#1c1e21;
+}
+.colorPopoverPreviewText{
+  color:var(--muted);
+  font-size:12px;
+}
+.colorPopoverHexInput{
+  text-transform:uppercase;
+}
+.colorPopoverField{
+  display:grid;
+  gap:6px;
+}
+.colorPopoverLabel{
+  color:var(--muted);
+  font-size:12px;
+}
+.colorPopoverAlphaRow{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.colorPopoverAlpha{
+  flex:1;
+}
+.colorPopoverAlphaInput{
+  max-width:72px;
+}
 .iconbtn{
   height:40px; border-radius:10px;
   border:1px solid var(--line); background:#1c1e21; color:var(--text);
   cursor:pointer;
+}
+.shapeToolWrap{
+  position:relative;
+}
+.shapeIconBtn{
+  width:100%;
+  position:relative;
+}
+.shapeToolCorner{
+  position:absolute;
+  right:1px;
+  bottom:1px;
+  width:14px;
+  height:14px;
+  padding:0;
+  border:none;
+  background:transparent;
+  cursor:pointer;
+}
+.shapeToolCorner::before{
+  content:"";
+  position:absolute;
+  right:0;
+  bottom:0;
+  width:0;
+  height:0;
+  border-style:solid;
+  border-width:0 0 13px 13px;
+  border-color:transparent transparent var(--accent) transparent;
+}
+.shapeToolCorner:hover::before{
+  border-bottom-color:#ffd98a;
+}
+.shapeToolMenu{
+  top:44px;
+  left:0;
+  min-width:140px;
 }
 .iconbtn.active{
   border-color:var(--accent);
