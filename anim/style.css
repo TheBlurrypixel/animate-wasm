@@ -382,6 +382,11 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   gap:6px;
   justify-content:flex-end;
 }
+.propToggleBtn{
+  min-width:36px;
+  font-size:16px;
+  line-height:1;
+}
 .propBtn{
   width:24px;
   height:24px;
@@ -390,6 +395,10 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
   color:var(--text);
   border-radius:6px;
   cursor:pointer;
+}
+.propBtn.active{
+  border-color:var(--accent);
+  box-shadow:0 0 0 1px rgba(255,204,102,.35) inset;
 }
 .hint{ margin-top:10px; color:var(--muted); font-size:12px; }
 .libraryList{

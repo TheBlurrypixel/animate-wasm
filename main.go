@@ -327,6 +327,7 @@ type App struct {
 	propPosY               js.Value
 	propScaleX             js.Value
 	propScaleY             js.Value
+	propScaleLock          js.Value
 	propSkewX              js.Value
 	propSkewY              js.Value
 	propRot                js.Value
@@ -371,6 +372,7 @@ type App struct {
 	curFrame       int // 1-based
 	playing        bool
 	autoKey        bool
+	lockScale      bool
 	maxUndoChanges int
 
 	zoom       float64 // pixels per frame
@@ -611,6 +613,7 @@ func main() {
 		shapeToolStroke:         "#66e3ff",
 		curFrame:                1,
 		autoKey:                 true,
+		lockScale:               true,
 		maxUndoChanges:          100,
 		zoom:                    10,  // px per frame
 		layerH:                  28,  // px
@@ -673,6 +676,7 @@ func (a *App) initDOM() {
 	a.propPosY = d.Call("getElementById", "propPosY")
 	a.propScaleX = d.Call("getElementById", "propScaleX")
 	a.propScaleY = d.Call("getElementById", "propScaleY")
+	a.propScaleLock = d.Call("getElementById", "propScaleLock")
 	a.propSkewX = d.Call("getElementById", "propSkewX")
 	a.propSkewY = d.Call("getElementById", "propSkewY")
 	a.propRot = d.Call("getElementById", "propRot")
@@ -716,6 +720,7 @@ func (a *App) initDOM() {
 	a.statusEl.Set("textContent", "WASM ready")
 	a.refreshDocUI()
 	a.updateAutoKeyUI()
+	a.updateScaleLockUI()
 	a.updateShapeToolUI()
 }
 
@@ -2363,8 +2368,22 @@ func (a *App) applyTransformField(field string, value float64) {
 		case "y":
 			kf.Y = value
 		case "scaleX":
+			if a.lockScale {
+				if math.Abs(kf.ScaleX) > 1e-6 {
+					kf.ScaleY *= value / kf.ScaleX
+				} else {
+					kf.ScaleY = value
+				}
+			}
 			kf.ScaleX = value
 		case "scaleY":
+			if a.lockScale {
+				if math.Abs(kf.ScaleY) > 1e-6 {
+					kf.ScaleX *= value / kf.ScaleY
+				} else {
+					kf.ScaleX = value
+				}
+			}
 			kf.ScaleY = value
 		case "skewX":
 			kf.SkewX = value
@@ -2379,6 +2398,21 @@ func (a *App) applyTransformField(field string, value float64) {
 		}
 		a.setInstanceKeyframe(li, ii, a.curFrame, kf)
 	}
+}
+
+func (a *App) updateScaleLockUI() {
+	if !a.propScaleLock.Truthy() {
+		return
+	}
+	if a.lockScale {
+		a.propScaleLock.Set("textContent", "⛓")
+		a.propScaleLock.Set("title", "Lock Scale: On")
+		a.propScaleLock.Get("classList").Call("add", "active")
+		return
+	}
+	a.propScaleLock.Set("textContent", "⛓×")
+	a.propScaleLock.Set("title", "Lock Scale: Off")
+	a.propScaleLock.Get("classList").Call("remove", "active")
 }
 
 func (a *App) applyInstanceName(value string) {
@@ -2590,7 +2624,7 @@ func (a *App) updatePropertiesPanel() {
 	if a.propName.Truthy() {
 		a.propName.Set("disabled", !hasSel)
 	}
-	transformControls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY}
+	transformControls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propScaleLock, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY}
 	shapeControls := []js.Value{a.propFill, a.propStroke, a.propStrokeW, a.toolFill, a.toolStroke}
 	tweenControls := []js.Value{a.propEaseMode, a.propEaseDir}
 	for _, c := range append(append(transformControls, shapeControls...), tweenControls...) {
@@ -2603,6 +2637,7 @@ func (a *App) updatePropertiesPanel() {
 		if a.propName.Truthy() {
 			setInputValueIfUnfocused(a.propName, "")
 		}
+		a.updateScaleLockUI()
 		if a.toolFill.Truthy() {
 			a.toolFill.Set("disabled", false)
 		}
@@ -2615,6 +2650,7 @@ func (a *App) updatePropertiesPanel() {
 	}
 
 	inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+	a.updateScaleLockUI()
 	if a.propName.Truthy() {
 		setInputValueIfUnfocused(a.propName, inst.Name)
 	}
@@ -3486,6 +3522,18 @@ func (a *App) bindUI() {
 	a.holdCallback(rotIncCb)
 	a.propRotDec.Call("addEventListener", "click", rotDecCb)
 	a.propRotInc.Call("addEventListener", "click", rotIncCb)
+	scaleLockCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.lockScale = !a.lockScale
+		a.updateScaleLockUI()
+		if a.lockScale {
+			a.statusEl.Set("textContent", "Lock Scale enabled")
+		} else {
+			a.statusEl.Set("textContent", "Lock Scale disabled")
+		}
+		return nil
+	})
+	a.holdCallback(scaleLockCb)
+	a.propScaleLock.Call("addEventListener", "click", scaleLockCb)
 
 	// publish button (demo)
 	d.Call("getElementById", "btn-publish").Call("addEventListener", "click",
@@ -3994,13 +4042,32 @@ func (a *App) bindUI() {
 						a.setInstanceKeyframe(li, ii, a.curFrame, kf)
 					case "scale":
 						ax, ay := kf.X+kf.AnchorX, kf.Y+kf.AnchorY
-						prevD := math.Hypot(a.lastMouseX-ax, a.lastMouseY-ay)
-						curD := math.Hypot(x-ax, y-ay)
-						if prevD > 1e-3 {
-							s := curD / prevD
-							kf.ScaleX *= s
-							kf.ScaleY *= s
-							a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+						prevVX := a.lastMouseX - ax
+						prevVY := a.lastMouseY - ay
+						curVX := x - ax
+						curVY := y - ay
+						if a.lockScale {
+							prevD := math.Hypot(prevVX, prevVY)
+							curD := math.Hypot(curVX, curVY)
+							if prevD > 1e-3 {
+								s := curD / prevD
+								kf.ScaleX *= s
+								kf.ScaleY *= s
+								a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+							}
+						} else {
+							changed := false
+							if math.Abs(prevVX) > 1e-3 {
+								kf.ScaleX *= curVX / prevVX
+								changed = true
+							}
+							if math.Abs(prevVY) > 1e-3 {
+								kf.ScaleY *= curVY / prevVY
+								changed = true
+							}
+							if changed {
+								a.setInstanceKeyframe(li, ii, a.curFrame, kf)
+							}
 						}
 					case "skewX":
 						kf.SkewX += dx * 0.01
