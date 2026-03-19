@@ -37,6 +37,7 @@ type Symbol struct {
 	BitmapData string            `json:"bitmapData,omitempty"`
 	BitmapW    float64           `json:"bitmapW,omitempty"`
 	BitmapH    float64           `json:"bitmapH,omitempty"`
+	Layers     []Layer           `json:"layers,omitempty"`
 	Instances  []ElementInstance `json:"instances"`
 }
 
@@ -230,13 +231,14 @@ func (l *Layer) hasKeyframe(frame int) bool {
 }
 
 func (a *App) addKeyframe(layerIdx, instanceIdx, frame int) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return
 	}
-	if instanceIdx < 0 || instanceIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instanceIdx < 0 || instanceIdx >= len((*layers)[layerIdx].Instances) {
 		return
 	}
-	inst := &a.doc.Layers[layerIdx].Instances[instanceIdx]
+	inst := &(*layers)[layerIdx].Instances[instanceIdx]
 	kf, ok := a.getInstanceKeyframe(layerIdx, instanceIdx, frame)
 	if !ok {
 		kf = defaultKeyframeAt(frame)
@@ -374,6 +376,7 @@ type App struct {
 	colorPickerAlpha       js.Value
 	colorPickerAlphaValue  js.Value
 	bitmapImages           map[string]js.Value
+	timelinePath           []string
 
 	// timeline state
 	curFrame       int // 1-based
@@ -536,6 +539,7 @@ func (a *App) endHistoryBatch() {
 func (a *App) restoreSnapshot(s appSnapshot) {
 	a.suspendHistory = true
 	a.historyBatchOpen = false
+	a.timelinePath = nil
 	a.doc = cloneDocument(s.Doc)
 	normalizeDocument(&a.doc)
 	a.syncBitmapAssets()
@@ -940,7 +944,11 @@ func (a *App) updateLibraryPanel() {
 		if sym.SymbolType == "bitmap" {
 			meta.Set("textContent", fmt.Sprintf("Bitmap, %.0f x %.0f", sym.BitmapW, sym.BitmapH))
 		} else {
-			meta.Set("textContent", fmt.Sprintf("%s, %d nested instance(s)", strings.Title(sym.SymbolType), len(sym.Instances)))
+			nestedCount := len(sym.Instances)
+			for _, layer := range sym.Layers {
+				nestedCount += len(layer.Instances)
+			}
+			meta.Set("textContent", fmt.Sprintf("%s, %d nested instance(s)", strings.Title(sym.SymbolType), nestedCount))
 		}
 		item.Call("appendChild", name)
 		item.Call("appendChild", meta)
@@ -1029,8 +1037,9 @@ func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
 		return
 	}
 	a.captureUndoSnapshot()
-	for i := range a.doc.Layers {
-		a.doc.Layers[i].Selected = false
+	layers := a.currentLayersPtr()
+	for i := range *layers {
+		(*layers)[i].Selected = false
 	}
 	layerIdx := 0
 	layerName := sym.Name
@@ -1052,7 +1061,7 @@ func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
 		kf.Y = y
 	}
 	inst := ElementInstance{
-		ID:          fmt.Sprintf("layer-%d-symbol-instance-1", len(a.doc.Layers)+1),
+		ID:          fmt.Sprintf("layer-%d-symbol-instance-1", len(*layers)+1),
 		Name:        "",
 		Description: "Symbol instance from Library",
 		ElementType: "symbol",
@@ -1060,7 +1069,7 @@ func (a *App) addSymbolInstanceAsNewLayer(symbolID string, x, y float64) {
 		Keyframes:   map[int]InstanceKeyframe{a.curFrame: kf},
 	}
 	layer.Instances = append(layer.Instances, inst)
-	a.doc.Layers = append([]Layer{layer}, a.doc.Layers...)
+	*layers = append([]Layer{layer}, (*layers)...)
 	a.setSingleInstanceSelection(layerIdx, 0)
 	a.selectedLibrarySymbolID = symbolID
 	a.updateSelectedLayerLabel()
@@ -1084,8 +1093,9 @@ func baseNameWithoutExt(name string) string {
 }
 
 func (a *App) createTopLayer(name, description string) int {
-	for i := range a.doc.Layers {
-		a.doc.Layers[i].Selected = false
+	layers := a.currentLayersPtr()
+	for i := range *layers {
+		(*layers)[i].Selected = false
 	}
 	layer := Layer{
 		Name:        name,
@@ -1094,16 +1104,17 @@ func (a *App) createTopLayer(name, description string) int {
 		Selected:    true,
 		Instances:   []ElementInstance{},
 	}
-	a.doc.Layers = append([]Layer{layer}, a.doc.Layers...)
+	*layers = append([]Layer{layer}, (*layers)...)
 	return 0
 }
 
 func (a *App) targetLayerForImportedBitmap(symbolName string) int {
-	if a.selectedLayerIdx >= 0 && a.selectedLayerIdx < len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if a.selectedLayerIdx >= 0 && a.selectedLayerIdx < len(layers) {
 		return a.selectedLayerIdx
 	}
-	for i := range a.doc.Layers {
-		if a.doc.Layers[i].Selected {
+	for i := range layers {
+		if layers[i].Selected {
 			return i
 		}
 	}
@@ -1214,9 +1225,56 @@ func normalizeDocument(doc *Document) {
 			if sym.BitmapH < 0 {
 				sym.BitmapH = -sym.BitmapH
 			}
+		} else if sym.SymbolType == "movieclip" && len(sym.Layers) == 0 && len(sym.Instances) > 0 {
+			sym.Layers = []Layer{{
+				Name:        "Layer 1",
+				Description: "Migrated MovieClip layer",
+				Color:       "#c77dff",
+				Selected:    true,
+				Instances:   append([]ElementInstance(nil), sym.Instances...),
+			}}
+		}
+		if sym.SymbolType == "movieclip" && sym.Layers == nil {
+			sym.Layers = []Layer{}
 		}
 		if sym.Instances == nil {
 			sym.Instances = []ElementInstance{}
+		}
+		for li := range sym.Layers {
+			layer := &sym.Layers[li]
+			if layer.Color == "" {
+				layer.Color = "#c77dff"
+			}
+			for ii := range layer.Instances {
+				inst := &layer.Instances[ii]
+				if inst.ID == "" {
+					inst.ID = fmt.Sprintf("%s-layer-%d-instance-%d", sym.ID, li+1, ii+1)
+				}
+				if inst.Keyframes == nil {
+					inst.Keyframes = make(map[int]InstanceKeyframe)
+				}
+				for frame, kf := range inst.Keyframes {
+					if frame < 1 || frame > doc.TotalFrames {
+						delete(inst.Keyframes, frame)
+						continue
+					}
+					if kf.Frame == 0 {
+						kf.Frame = frame
+					}
+					if kf.ScaleX == 0 {
+						kf.ScaleX = 1
+					}
+					if kf.ScaleY == 0 {
+						kf.ScaleY = 1
+					}
+					if kf.Opacity < 0 || kf.Opacity > 1 {
+						kf.Opacity = 1
+					}
+					kf.EaseMode = normalizeEaseMode(kf.EaseMode)
+					kf.EaseDir = normalizeEaseDir(kf.EaseDir)
+					inst.Keyframes[frame] = kf
+				}
+			}
 		}
 		for ii := range sym.Instances {
 			inst := &sym.Instances[ii]
@@ -1323,14 +1381,15 @@ func (a *App) nextPathID() string {
 }
 
 func (a *App) selectedLayerIndexes() []int {
-	selected := make([]int, 0, len(a.doc.Layers))
-	for i := range a.doc.Layers {
-		if a.doc.Layers[i].Selected {
+	layers := a.currentLayersPtr()
+	selected := make([]int, 0, len(*layers))
+	for i := range *layers {
+		if (*layers)[i].Selected {
 			selected = append(selected, i)
 		}
 	}
-	if len(selected) == 0 && len(a.doc.Layers) > 0 {
-		a.doc.Layers[0].Selected = true
+	if len(selected) == 0 && len(*layers) > 0 {
+		(*layers)[0].Selected = true
 		selected = append(selected, 0)
 	}
 	return selected
@@ -1340,7 +1399,8 @@ func (a *App) updateSelectedLayerLabel() {
 	pairs := a.selectedInstancePairs()
 	if len(pairs) == 1 {
 		li, ii := pairs[0][0], pairs[0][1]
-		a.selNameEl.Set("textContent", a.instanceDisplayName(a.doc.Layers[li].Instances[ii]))
+		layers := a.currentLayers()
+		a.selNameEl.Set("textContent", a.instanceDisplayName(layers[li].Instances[ii]))
 		return
 	}
 	if len(pairs) > 1 {
@@ -1353,8 +1413,9 @@ func (a *App) updateSelectedLayerLabel() {
 		return
 	}
 	names := make([]string, 0, len(selected))
+	layers := a.currentLayers()
 	for _, idx := range selected {
-		names = append(names, a.doc.Layers[idx].Name)
+		names = append(names, layers[idx].Name)
 	}
 	a.selNameEl.Set("textContent", strings.Join(names, ", "))
 }
@@ -1379,14 +1440,15 @@ func (a *App) instanceDisplayName(inst ElementInstance) string {
 }
 
 func (a *App) selectLayer(layerIdx int, additive bool) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return
 	}
 	if additive {
-		a.doc.Layers[layerIdx].Selected = !a.doc.Layers[layerIdx].Selected
+		(*layers)[layerIdx].Selected = !(*layers)[layerIdx].Selected
 	} else {
-		for i := range a.doc.Layers {
-			a.doc.Layers[i].Selected = i == layerIdx
+		for i := range *layers {
+			(*layers)[i].Selected = i == layerIdx
 		}
 	}
 	a.updateSelectedLayerLabel()
@@ -1394,8 +1456,9 @@ func (a *App) selectLayer(layerIdx int, additive bool) {
 
 func (a *App) addPathInstanceToSelectedLayers(pathID string, baseKeyframe InstanceKeyframe) {
 	selected := a.selectedLayerIndexes()
+	layers := a.currentLayersPtr()
 	for _, layerIdx := range selected {
-		layer := &a.doc.Layers[layerIdx]
+		layer := &(*layers)[layerIdx]
 		n := len(layer.Instances) + 1
 		inst := ElementInstance{
 			ID:          fmt.Sprintf("layer-%d-path-instance-%d", layerIdx+1, n),
@@ -1659,10 +1722,11 @@ func resolveElementInstanceKeyframe(inst ElementInstance, frame int, totalFrames
 }
 
 func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) {
 		return InstanceKeyframe{}, false
 	}
-	layer := a.doc.Layers[layerIdx]
+	layer := layers[layerIdx]
 	if instIdx < 0 || instIdx >= len(layer.Instances) {
 		return InstanceKeyframe{}, false
 	}
@@ -1670,13 +1734,14 @@ func (a *App) getInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyfram
 }
 
 func (a *App) getOrCreateInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return InstanceKeyframe{}, false
 	}
-	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instIdx < 0 || instIdx >= len((*layers)[layerIdx].Instances) {
 		return InstanceKeyframe{}, false
 	}
-	inst := &a.doc.Layers[layerIdx].Instances[instIdx]
+	inst := &(*layers)[layerIdx].Instances[instIdx]
 	if existing, ok := inst.Keyframes[frame]; ok {
 		return existing, true
 	} else if base, ok := a.getInstanceKeyframe(layerIdx, instIdx, frame); ok {
@@ -1691,25 +1756,27 @@ func (a *App) getOrCreateInstanceKeyframe(layerIdx, instIdx, frame int) (Instanc
 }
 
 func (a *App) getExactInstanceKeyframe(layerIdx, instIdx, frame int) (InstanceKeyframe, bool) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) {
 		return InstanceKeyframe{}, false
 	}
-	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instIdx < 0 || instIdx >= len(layers[layerIdx].Instances) {
 		return InstanceKeyframe{}, false
 	}
-	kf, ok := a.doc.Layers[layerIdx].Instances[instIdx].Keyframes[frame]
+	kf, ok := layers[layerIdx].Instances[instIdx].Keyframes[frame]
 	return kf, ok
 }
 
 func (a *App) setInstanceKeyframe(layerIdx, instIdx, frame int, kf InstanceKeyframe) bool {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return false
 	}
-	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instIdx < 0 || instIdx >= len((*layers)[layerIdx].Instances) {
 		return false
 	}
 	kf.Frame = frame
-	a.doc.Layers[layerIdx].Instances[instIdx].Keyframes[frame] = kf
+	(*layers)[layerIdx].Instances[instIdx].Keyframes[frame] = kf
 	return true
 }
 
@@ -1764,7 +1831,7 @@ func (a *App) closeKeyframeContextMenu() {
 }
 
 func (a *App) openLayerContextMenu(layerIdx int, clientX, clientY float64) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || !a.layerCtxMenu.Truthy() {
+	if layerIdx < 0 || layerIdx >= len(a.currentLayers()) || !a.layerCtxMenu.Truthy() {
 		return
 	}
 	a.layerCtxTargetIdx = layerIdx
@@ -1785,7 +1852,7 @@ func (a *App) openStageContextMenu(layerIdx, instIdx int, clientX, clientY float
 }
 
 func (a *App) openKeyframeContextMenu(layerIdx, frame int, clientX, clientY float64) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || frame < 1 || frame > a.doc.TotalFrames || !a.keyframeCtxMenu.Truthy() {
+	if layerIdx < 0 || layerIdx >= len(a.currentLayers()) || frame < 1 || frame > a.doc.TotalFrames || !a.keyframeCtxMenu.Truthy() {
 		return
 	}
 	a.keyframeCtxLayerIdx = layerIdx
@@ -1801,7 +1868,8 @@ func (a *App) pickTimelineKeyframeAt(x, y float64) (int, int, bool) {
 	}
 	rowTop := 10.0 + 22.0 - 18.0
 	layerIdx := int((y - rowTop) / a.layerH)
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) {
 		return -1, -1, false
 	}
 	frame := a.xToFrame(x)
@@ -1810,18 +1878,19 @@ func (a *App) pickTimelineKeyframeAt(x, y float64) (int, int, bool) {
 	if x < keyX+2 || x > keyX+2+keyW {
 		return -1, -1, false
 	}
-	if !a.doc.Layers[layerIdx].hasKeyframe(frame) {
+	if !layers[layerIdx].hasKeyframe(frame) {
 		return -1, -1, false
 	}
 	return layerIdx, frame, true
 }
 
 func (a *App) deleteKeyframe(layerIdx, frame int) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) || frame < 1 || frame > a.doc.TotalFrames {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) || frame < 1 || frame > a.doc.TotalFrames {
 		return
 	}
 	removed := 0
-	for _, inst := range a.doc.Layers[layerIdx].Instances {
+	for _, inst := range (*layers)[layerIdx].Instances {
 		if _, ok := inst.Keyframes[frame]; ok {
 			removed++
 		}
@@ -1831,8 +1900,8 @@ func (a *App) deleteKeyframe(layerIdx, frame int) {
 		return
 	}
 	a.captureUndoSnapshot()
-	for ii := range a.doc.Layers[layerIdx].Instances {
-		delete(a.doc.Layers[layerIdx].Instances[ii].Keyframes, frame)
+	for ii := range (*layers)[layerIdx].Instances {
+		delete((*layers)[layerIdx].Instances[ii].Keyframes, frame)
 	}
 	if a.selectedTweenLayerIdx == layerIdx && (a.selectedTweenStartFrame == frame || a.selectedTweenEndFrame == frame) {
 		a.clearTweenSelection()
@@ -1842,10 +1911,11 @@ func (a *App) deleteKeyframe(layerIdx, frame int) {
 }
 
 func (a *App) renameLayer(layerIdx int) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return
 	}
-	current := a.doc.Layers[layerIdx].Name
+	current := (*layers)[layerIdx].Name
 	next := js.Global().Call("prompt", "Rename layer", current)
 	if !next.Truthy() {
 		return
@@ -1855,19 +1925,20 @@ func (a *App) renameLayer(layerIdx int) {
 		return
 	}
 	a.captureUndoSnapshot()
-	a.doc.Layers[layerIdx].Name = name
+	(*layers)[layerIdx].Name = name
 	a.updateSelectedLayerLabel()
 	a.statusEl.Set("textContent", "Layer renamed")
 }
 
 func (a *App) deleteLayer(layerIdx int) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return
 	}
 	a.captureUndoSnapshot()
 
-	if len(a.doc.Layers) == 1 {
-		a.doc.Layers[0] = Layer{
+	if len(*layers) == 1 {
+		(*layers)[0] = Layer{
 			Name:        "Layer 1",
 			Description: "Default empty layer",
 			Color:       "#c77dff",
@@ -1880,16 +1951,16 @@ func (a *App) deleteLayer(layerIdx int) {
 		return
 	}
 
-	a.doc.Layers = append(a.doc.Layers[:layerIdx], a.doc.Layers[layerIdx+1:]...)
-	for i := range a.doc.Layers {
-		a.doc.Layers[i].Selected = false
+	*layers = append((*layers)[:layerIdx], (*layers)[layerIdx+1:]...)
+	for i := range *layers {
+		(*layers)[i].Selected = false
 	}
 	nextIdx := layerIdx
-	if nextIdx >= len(a.doc.Layers) {
-		nextIdx = len(a.doc.Layers) - 1
+	if nextIdx >= len(*layers) {
+		nextIdx = len(*layers) - 1
 	}
 	if nextIdx >= 0 {
-		a.doc.Layers[nextIdx].Selected = true
+		(*layers)[nextIdx].Selected = true
 	}
 	a.clearInstanceSelection()
 	a.updateSelectedLayerLabel()
@@ -1897,14 +1968,15 @@ func (a *App) deleteLayer(layerIdx int) {
 }
 
 func (a *App) deleteInstance(layerIdx, instIdx int) {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayersPtr()
+	if layerIdx < 0 || layerIdx >= len(*layers) {
 		return
 	}
-	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instIdx < 0 || instIdx >= len((*layers)[layerIdx].Instances) {
 		return
 	}
 	a.captureUndoSnapshot()
-	layer := &a.doc.Layers[layerIdx]
+	layer := &(*layers)[layerIdx]
 	layer.Instances = append(layer.Instances[:instIdx], layer.Instances[instIdx+1:]...)
 	a.clearInstanceSelection()
 	a.updateSelectedLayerLabel()
@@ -2039,13 +2111,14 @@ func (a *App) isInstanceSelected(layerIdx, instIdx int) bool {
 }
 
 func (a *App) selectedInstancePairs() [][2]int {
+	layers := a.currentLayers()
 	out := make([][2]int, 0, len(a.selectedInstances))
 	for key := range a.selectedInstances {
 		li, ii, ok := parseSelKey(key)
 		if !ok {
 			continue
 		}
-		if li < 0 || li >= len(a.doc.Layers) || ii < 0 || ii >= len(a.doc.Layers[li].Instances) {
+		if li < 0 || li >= len(layers) || ii < 0 || ii >= len(layers[li].Instances) {
 			continue
 		}
 		out = append(out, [2]int{li, ii})
@@ -2073,11 +2146,12 @@ func (a *App) setPrimarySelection(layerIdx, instIdx int) {
 }
 
 func (a *App) convertSelectedInstanceToSymbol() {
-	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(a.doc.Layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(a.doc.Layers[a.selectedLayerIdx].Instances) {
+	layers := a.currentLayersPtr()
+	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(*layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len((*layers)[a.selectedLayerIdx].Instances) {
 		a.statusEl.Set("textContent", "Select an instance to convert to a symbol")
 		return
 	}
-	layer := &a.doc.Layers[a.selectedLayerIdx]
+	layer := &(*layers)[a.selectedLayerIdx]
 	original := cloneInstance(layer.Instances[a.selectedInstIdx])
 	if !isRenderableInstanceType(original) {
 		a.statusEl.Set("textContent", "Only stage instances can be converted to a symbol")
@@ -2089,14 +2163,18 @@ func (a *App) convertSelectedInstanceToSymbol() {
 	symbolName := fmt.Sprintf("Movie Clip %d", len(a.doc.Symbols)+1)
 	nested := cloneInstance(original)
 	nested.ID = symbolID + "-instance-1"
-	if nested.Name == "" {
-		nested.Name = "Nested Instance"
-	}
 	symbol := Symbol{
 		ID:         symbolID,
 		Name:       symbolName,
 		SymbolType: "movieclip",
-		Instances:  []ElementInstance{nested},
+		Layers: []Layer{{
+			Name:        "Layer 1",
+			Description: "MovieClip timeline layer",
+			Color:       "#c77dff",
+			Selected:    true,
+			Instances:   []ElementInstance{nested},
+		}},
+		Instances: []ElementInstance{},
 	}
 	a.doc.Symbols = append(a.doc.Symbols, symbol)
 
@@ -2106,15 +2184,13 @@ func (a *App) convertSelectedInstanceToSymbol() {
 		Description: "Movie Clip instance",
 		ElementType: "symbol",
 		ElementID:   symbolID,
-		Keyframes:   make(map[int]InstanceKeyframe, len(original.Keyframes)),
+		Keyframes:   map[int]InstanceKeyframe{1: defaultKeyframeAt(1)},
 	}
-	for frame := range original.Keyframes {
-		kf := defaultKeyframeAt(frame)
-		if minX, minY, maxX, maxY, ok := a.symbolBoundsAtFrame(symbol, frame); ok {
-			kf.AnchorX = (minX + maxX) / 2
-			kf.AnchorY = (minY + maxY) / 2
-		}
-		wrapper.Keyframes[frame] = kf
+	if minX, minY, maxX, maxY, ok := a.symbolBoundsAtFrame(symbol, a.curFrame); ok {
+		kf := wrapper.Keyframes[1]
+		kf.AnchorX = (minX + maxX) / 2
+		kf.AnchorY = (minY + maxY) / 2
+		wrapper.Keyframes[1] = kf
 	}
 	layer.Instances[a.selectedInstIdx] = wrapper
 	a.setSingleInstanceSelection(a.selectedLayerIdx, a.selectedInstIdx)
@@ -2167,13 +2243,14 @@ func (a *App) selectedTweenKeyframe() (InstanceKeyframe, bool) {
 }
 
 func (a *App) selectedInstanceTweenFrames(layerIdx, instIdx int) []int {
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) {
 		return nil
 	}
-	if instIdx < 0 || instIdx >= len(a.doc.Layers[layerIdx].Instances) {
+	if instIdx < 0 || instIdx >= len(layers[layerIdx].Instances) {
 		return nil
 	}
-	inst := a.doc.Layers[layerIdx].Instances[instIdx]
+	inst := layers[layerIdx].Instances[instIdx]
 	frames := make([]int, 0, len(inst.Keyframes))
 	for frame := range inst.Keyframes {
 		frames = append(frames, frame)
@@ -2194,7 +2271,8 @@ func (a *App) pickTweenSpanAt(x, y float64) (int, int, int, int, bool) {
 	}
 	rowTop := 10.0 + 22.0 - 18.0
 	layerIdx := int((y - rowTop) / a.layerH)
-	if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) {
 		return -1, -1, -1, -1, false
 	}
 	if a.selectedLayerIdx != layerIdx || a.selectedInstIdx < 0 {
@@ -2310,6 +2388,75 @@ func (a *App) syncBitmapAssets() {
 		next[sym.ID] = img
 	}
 	a.bitmapImages = next
+}
+
+func (a *App) currentLayersPtr() *[]Layer {
+	if len(a.timelinePath) == 0 {
+		return &a.doc.Layers
+	}
+	symbolID := a.timelinePath[len(a.timelinePath)-1]
+	for i := range a.doc.Symbols {
+		if a.doc.Symbols[i].ID == symbolID {
+			return &a.doc.Symbols[i].Layers
+		}
+	}
+	return &a.doc.Layers
+}
+
+func (a *App) currentLayers() []Layer {
+	return *a.currentLayersPtr()
+}
+
+func (a *App) currentTimelineBreadcrumb() string {
+	parts := []string{"Root"}
+	for _, symbolID := range a.timelinePath {
+		parts = append(parts, a.symbolNameByID(symbolID))
+	}
+	return strings.Join(parts, " > ")
+}
+
+func (a *App) enterMovieClipTimeline(symbolID string) bool {
+	sym, ok := a.findSymbolByID(symbolID)
+	if !ok || sym.SymbolType != "movieclip" {
+		return false
+	}
+	a.timelinePath = append(a.timelinePath, symbolID)
+	a.clearInstanceSelection()
+	layers := a.currentLayersPtr()
+	if len(*layers) == 0 {
+		*layers = []Layer{{
+			Name:        "Layer 1",
+			Description: "Default empty layer",
+			Color:       "#c77dff",
+			Selected:    true,
+			Instances:   []ElementInstance{},
+		}}
+	} else {
+		hasSelected := false
+		for _, layer := range *layers {
+			if layer.Selected {
+				hasSelected = true
+				break
+			}
+		}
+		if !hasSelected {
+			(*layers)[0].Selected = true
+		}
+	}
+	a.updateSelectedLayerLabel()
+	a.statusEl.Set("textContent", "Entered "+sym.Name)
+	return true
+}
+
+func (a *App) exitMovieClipTimeline() bool {
+	if len(a.timelinePath) == 0 {
+		return false
+	}
+	a.timelinePath = a.timelinePath[:len(a.timelinePath)-1]
+	a.clearInstanceSelection()
+	a.updateSelectedLayerLabel()
+	a.statusEl.Set("textContent", "Returned to "+a.currentTimelineBreadcrumb())
+	return true
 }
 
 func normalizeHexColor(s string) string {
@@ -2522,7 +2669,7 @@ func (a *App) applyTransformField(field string, value float64) {
 		case "skewY":
 			kf.SkewY = value
 		case "rotation":
-			kf.Rotation = value
+			kf.Rotation = value * math.Pi / 180
 		case "anchorX":
 			kf.AnchorX = value
 		case "anchorY":
@@ -2548,11 +2695,12 @@ func (a *App) updateScaleLockUI() {
 }
 
 func (a *App) applyInstanceName(value string) {
-	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(a.doc.Layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(a.doc.Layers[a.selectedLayerIdx].Instances) {
+	layers := a.currentLayersPtr()
+	if a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(*layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len((*layers)[a.selectedLayerIdx].Instances) {
 		return
 	}
 	a.captureUndoSnapshot()
-	a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx].Name = value
+	(*layers)[a.selectedLayerIdx].Instances[a.selectedInstIdx].Name = value
 	a.updateSelectedLayerLabel()
 	a.updatePropertiesPanel()
 }
@@ -2563,7 +2711,7 @@ func (a *App) applyShapePaint(field, color string, alpha float64) {
 	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		inst := a.doc.Layers[li].Instances[ii]
+		inst := a.currentLayers()[li].Instances[ii]
 		switch inst.ElementType {
 		case "path":
 			for pi := range a.doc.Paths {
@@ -2597,7 +2745,7 @@ func (a *App) applyShapeColor(field, color string) {
 	alpha := 1.0
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		inst := a.doc.Layers[li].Instances[ii]
+		inst := a.currentLayers()[li].Instances[ii]
 		if inst.ElementType == "path" {
 			if p, ok := a.findPathByID(inst.ElementID); ok {
 				if field == "fill" {
@@ -2626,7 +2774,7 @@ func (a *App) applyShapeAlpha(field string, alpha float64) {
 	base := "#66e3ff"
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		inst := a.doc.Layers[li].Instances[ii]
+		inst := a.currentLayers()[li].Instances[ii]
 		if inst.ElementType == "path" {
 			if p, ok := a.findPathByID(inst.ElementID); ok {
 				if field == "fill" {
@@ -2669,7 +2817,7 @@ func (a *App) applyShapeNumeric(field string, value float64) {
 	a.captureUndoSnapshot()
 	for _, pair := range a.selectedInstancePairsOrPrimary() {
 		li, ii := pair[0], pair[1]
-		inst := a.doc.Layers[li].Instances[ii]
+		inst := a.currentLayers()[li].Instances[ii]
 		switch inst.ElementType {
 		case "path":
 			for pi := range a.doc.Paths {
@@ -2753,6 +2901,10 @@ func (a *App) addKeyframeForSelectedInstances() {
 
 func (a *App) updatePropertiesPanel() {
 	hasSel := a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0
+	layers := a.currentLayers()
+	if hasSel && (a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(layers[a.selectedLayerIdx].Instances)) {
+		hasSel = false
+	}
 	if a.propName.Truthy() {
 		a.propName.Set("disabled", !hasSel)
 	}
@@ -2781,7 +2933,7 @@ func (a *App) updatePropertiesPanel() {
 		return
 	}
 
-	inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+	inst := layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 	a.updateScaleLockUI()
 	if a.propName.Truthy() {
 		setInputValueIfUnfocused(a.propName, inst.Name)
@@ -2799,7 +2951,7 @@ func (a *App) updatePropertiesPanel() {
 		setInputValueIfUnfocused(a.propScaleY, fmt.Sprintf("%.3f", kf.ScaleY))
 		setInputValueIfUnfocused(a.propSkewX, fmt.Sprintf("%.3f", kf.SkewX))
 		setInputValueIfUnfocused(a.propSkewY, fmt.Sprintf("%.3f", kf.SkewY))
-		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation))
+		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation*180/math.Pi))
 		setInputValueIfUnfocused(a.propAncX, fmt.Sprintf("%.2f", kf.AnchorX))
 		setInputValueIfUnfocused(a.propAncY, fmt.Sprintf("%.2f", kf.AnchorY))
 	} else if kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame); ok {
@@ -2809,7 +2961,7 @@ func (a *App) updatePropertiesPanel() {
 		setInputValueIfUnfocused(a.propScaleY, fmt.Sprintf("%.3f", kf.ScaleY))
 		setInputValueIfUnfocused(a.propSkewX, fmt.Sprintf("%.3f", kf.SkewX))
 		setInputValueIfUnfocused(a.propSkewY, fmt.Sprintf("%.3f", kf.SkewY))
-		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation))
+		setInputValueIfUnfocused(a.propRot, fmt.Sprintf("%.3f", kf.Rotation*180/math.Pi))
 		setInputValueIfUnfocused(a.propAncX, fmt.Sprintf("%.2f", kf.AnchorX))
 		setInputValueIfUnfocused(a.propAncY, fmt.Sprintf("%.2f", kf.AnchorY))
 	}
@@ -2978,12 +3130,23 @@ func (a *App) symbolBoundsAtFrame(sym Symbol, frame int) (float64, float64, floa
 	}
 	var minX, minY, maxX, maxY float64
 	have := false
-	for _, nested := range sym.Instances {
-		bx0, by0, bx1, by1, ok := a.instanceBoundsRecursive(nested, frame, 0)
-		if !ok {
-			continue
+	for _, layer := range sym.Layers {
+		for _, nested := range layer.Instances {
+			bx0, by0, bx1, by1, ok := a.instanceBoundsRecursive(nested, frame, 0)
+			if !ok {
+				continue
+			}
+			minX, minY, maxX, maxY, have = unionBounds(minX, minY, maxX, maxY, have, bx0, by0, bx1, by1)
 		}
-		minX, minY, maxX, maxY, have = unionBounds(minX, minY, maxX, maxY, have, bx0, by0, bx1, by1)
+	}
+	if !have {
+		for _, nested := range sym.Instances {
+			bx0, by0, bx1, by1, ok := a.instanceBoundsRecursive(nested, frame, 0)
+			if !ok {
+				continue
+			}
+			minX, minY, maxX, maxY, have = unionBounds(minX, minY, maxX, maxY, have, bx0, by0, bx1, by1)
+		}
 	}
 	return minX, minY, maxX, maxY, have
 }
@@ -3058,8 +3221,15 @@ func (a *App) drawInstanceRecursive(ctx js.Value, inst ElementInstance, frame, d
 					ctx.Call("drawImage", img, 0, 0, sym.BitmapW, sym.BitmapH)
 				}
 			} else {
-				for _, nested := range sym.Instances {
-					a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+				for _, layer := range sym.Layers {
+					for _, nested := range layer.Instances {
+						a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+					}
+				}
+				if len(sym.Layers) == 0 {
+					for _, nested := range sym.Instances {
+						a.drawInstanceRecursive(ctx, nested, frame, depth+1)
+					}
 				}
 			}
 		}
@@ -3076,8 +3246,9 @@ func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, floa
 }
 
 func (a *App) pickInstanceAt(x, y float64) (int, int, bool) {
-	for li := len(a.doc.Layers) - 1; li >= 0; li-- {
-		layer := a.doc.Layers[li]
+	layers := a.currentLayers()
+	for li := len(layers) - 1; li >= 0; li-- {
+		layer := layers[li]
 		for ii := len(layer.Instances) - 1; ii >= 0; ii-- {
 			inst := layer.Instances[ii]
 			if !isRenderableInstanceType(inst) {
@@ -3224,6 +3395,7 @@ func (a *App) loadDocumentJSONText(text string) error {
 	}
 	normalizeDocument(&doc)
 	a.doc = doc
+	a.timelinePath = nil
 	a.syncBitmapAssets()
 	a.undoStack = nil
 	a.redoStack = nil
@@ -3808,8 +3980,9 @@ func (a *App) bindUI() {
 		a.closeStageContextMenu()
 		if layerIdx >= 0 && instIdx >= 0 {
 			a.setSingleInstanceSelection(layerIdx, instIdx)
-			for i := range a.doc.Layers {
-				a.doc.Layers[i].Selected = i == layerIdx
+			layers := a.currentLayersPtr()
+			for i := range *layers {
+				(*layers)[i].Selected = i == layerIdx
 			}
 			a.updateSelectedLayerLabel()
 		}
@@ -3907,17 +4080,18 @@ func (a *App) bindUI() {
 	d.Call("getElementById", "btn-layer").Call("addEventListener", "click",
 		js.FuncOf(func(this js.Value, args []js.Value) any {
 			a.captureUndoSnapshot()
-			for i := range a.doc.Layers {
-				a.doc.Layers[i].Selected = false
+			layers := a.currentLayersPtr()
+			for i := range *layers {
+				(*layers)[i].Selected = false
 			}
-			n := len(a.doc.Layers) + 1
-			a.doc.Layers = append([]Layer{{
+			n := len(*layers) + 1
+			*layers = append([]Layer{{
 				Name:        fmt.Sprintf("Layer %d", n),
 				Description: fmt.Sprintf("User created layer %d", n),
 				Color:       "#c77dff",
 				Selected:    true,
 				Instances:   []ElementInstance{},
-			}}, a.doc.Layers...)
+			}}, (*layers)...)
 			a.clearInstanceSelection()
 			a.updateSelectedLayerLabel()
 			return nil
@@ -4150,12 +4324,30 @@ func (a *App) bindUI() {
 			e.Call("preventDefault")
 			e.Call("stopPropagation")
 			a.setSingleInstanceSelection(li, ii)
-			for i := range a.doc.Layers {
-				a.doc.Layers[i].Selected = i == li
+			layers := a.currentLayersPtr()
+			for i := range *layers {
+				(*layers)[i].Selected = i == li
 			}
 			a.updateSelectedLayerLabel()
 			a.openStageContextMenu(li, ii, e.Get("clientX").Float(), e.Get("clientY").Float())
 		}
+		return nil
+	}))
+	a.stageCanvas.Call("addEventListener", "dblclick", js.FuncOf(func(this js.Value, args []js.Value) any {
+		e := args[0]
+		x := e.Get("offsetX").Float()
+		y := e.Get("offsetY").Float()
+		if li, ii, ok := a.pickInstanceAt(x, y); ok {
+			layers := a.currentLayers()
+			inst := layers[li].Instances[ii]
+			if inst.ElementType == "symbol" {
+				if sym, ok := a.findSymbolByID(inst.ElementID); ok && sym.SymbolType == "movieclip" {
+					a.enterMovieClipTimeline(sym.ID)
+					return nil
+				}
+			}
+		}
+		a.exitMovieClipTimeline()
 		return nil
 	}))
 	a.stageCanvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -4221,8 +4413,9 @@ func (a *App) bindUI() {
 				a.selectedPathPt = -1
 				a.selectedHandle = ""
 				if !additive {
-					for i := range a.doc.Layers {
-						a.doc.Layers[i].Selected = i == li
+					layers := a.currentLayersPtr()
+					for i := range *layers {
+						(*layers)[i].Selected = i == li
 					}
 				}
 				a.updateSelectedLayerLabel()
@@ -4250,7 +4443,7 @@ func (a *App) bindUI() {
 					return nil
 				}
 			}
-			inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+			inst := a.currentLayers()[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 			if inst.ElementType != "path" {
 				return nil
 			}
@@ -4408,7 +4601,7 @@ func (a *App) bindUI() {
 		}
 
 		if a.dragMode == "subselect" && a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 && a.selectedPathPt >= 0 {
-			inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+			inst := a.currentLayers()[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 			if inst.ElementType == "path" {
 				for pi := range a.doc.Paths {
 					if a.doc.Paths[pi].ID != inst.ElementID {
@@ -4482,9 +4675,10 @@ func (a *App) bindUI() {
 				a.selectedLayerIdx = -1
 				a.selectedInstIdx = -1
 			}
-			for li := range a.doc.Layers {
-				for ii := range a.doc.Layers[li].Instances {
-					inst := a.doc.Layers[li].Instances[ii]
+			layers := a.currentLayers()
+			for li := range layers {
+				for ii := range layers[li].Instances {
+					inst := layers[li].Instances[ii]
 					if !isRenderableInstanceType(inst) {
 						continue
 					}
@@ -4673,8 +4867,9 @@ func (a *App) renderStage() {
 	ctx.Call("fillRect", 0, 0, w, h)
 
 	// draw shape instances
-	for li := range a.doc.Layers {
-		layer := a.doc.Layers[li]
+	layers := a.currentLayers()
+	for li := range layers {
+		layer := layers[li]
 		for ii := range layer.Instances {
 			inst := layer.Instances[ii]
 			a.drawInstanceRecursive(ctx, inst, a.curFrame, 0)
@@ -4835,7 +5030,7 @@ func (a *App) renderStage() {
 
 	// subselect display: all anchors + selected point handles
 	if a.activeTool == "subselect" && a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 {
-		inst := a.doc.Layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+		inst := layers[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 		if inst.ElementType == "path" {
 			if p, ok := a.findPathByID(inst.ElementID); ok {
 				if kf, ok := a.getInstanceKeyframe(a.selectedLayerIdx, a.selectedInstIdx, a.curFrame); ok {
@@ -4881,6 +5076,16 @@ func (a *App) renderStage() {
 			}
 		}
 	}
+
+	// timeline breadcrumb overlay
+	ctx.Set("fillStyle", "rgba(20, 22, 24, 0.78)")
+	ctx.Call("fillRect", 10, 10, math.Min(w-20, 360), 26)
+	ctx.Set("strokeStyle", "rgba(255,255,255,0.12)")
+	ctx.Set("lineWidth", 1)
+	ctx.Call("strokeRect", 10, 10, math.Min(w-20, 360), 26)
+	ctx.Set("fillStyle", "rgba(255,255,255,0.92)")
+	ctx.Set("font", "12px system-ui")
+	ctx.Call("fillText", a.currentTimelineBreadcrumb(), 18, 27)
 
 	// stage border vibe
 	ctx.Set("strokeStyle", "rgba(0,0,0,0.25)")
@@ -4933,7 +5138,8 @@ func (a *App) renderTimeline() {
 	}
 
 	// layers rows
-	for i, layer := range a.doc.Layers {
+	layers := a.currentLayers()
+	for i, layer := range layers {
 		y := topPad + float64(i)*a.layerH + 22
 		// row background
 		if layer.Selected {
@@ -5121,6 +5327,7 @@ func (a *App) handleMenuAction(action string) {
 
 	case "file.new":
 		a.doc = newDefaultDocument()
+		a.timelinePath = nil
 		a.syncBitmapAssets()
 		a.undoStack = nil
 		a.redoStack = nil
@@ -5188,17 +5395,18 @@ func (a *App) handleMenuAction(action string) {
 
 	case "insert.layer":
 		a.captureUndoSnapshot()
-		for i := range a.doc.Layers {
-			a.doc.Layers[i].Selected = false
+		layers := a.currentLayersPtr()
+		for i := range *layers {
+			(*layers)[i].Selected = false
 		}
-		n := len(a.doc.Layers) + 1
-		a.doc.Layers = append([]Layer{{
+		n := len(*layers) + 1
+		*layers = append([]Layer{{
 			Name:        fmt.Sprintf("Layer %d", n),
 			Description: fmt.Sprintf("User created layer %d", n),
 			Color:       "#c77dff",
 			Selected:    true,
 			Instances:   []ElementInstance{},
-		}}, a.doc.Layers...)
+		}}, (*layers)...)
 		a.clearInstanceSelection()
 		a.updateSelectedLayerLabel()
 		a.statusEl.Set("textContent", "Layer added")
