@@ -324,6 +324,11 @@ type App struct {
 	stageTimelineEl        js.Value
 	docSizeEl              js.Value
 	docFpsEl               js.Value
+	propDocName            js.Value
+	propDocWidth           js.Value
+	propDocHeight          js.Value
+	propDocFps             js.Value
+	propDocBg              js.Value
 	curFrameEl             js.Value
 	isPlayEl               js.Value
 	selNameEl              js.Value
@@ -682,6 +687,11 @@ func (a *App) initDOM() {
 	a.stageTimelineEl = d.Call("getElementById", "stageTimelineBreadcrumb")
 	a.docSizeEl = d.Call("getElementById", "docSize")
 	a.docFpsEl = d.Call("getElementById", "docFps")
+	a.propDocName = d.Call("getElementById", "propDocName")
+	a.propDocWidth = d.Call("getElementById", "propDocWidth")
+	a.propDocHeight = d.Call("getElementById", "propDocHeight")
+	a.propDocFps = d.Call("getElementById", "propDocFps")
+	a.propDocBg = d.Call("getElementById", "propDocBg")
 	a.curFrameEl = d.Call("getElementById", "curFrame")
 	a.isPlayEl = d.Call("getElementById", "isPlaying")
 	a.selNameEl = d.Call("getElementById", "selName")
@@ -752,8 +762,12 @@ func (a *App) refreshDocUI() {
 		a.stageTimelineEl.Set("textContent", a.currentTimelineBreadcrumb())
 	}
 	js.Global().Get("document").Set("title", fmt.Sprintf("%s - Animate-like Editor (Go WASM)", a.doc.Name))
-	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
-	a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
+	if a.docSizeEl.Truthy() {
+		a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
+	}
+	if a.docFpsEl.Truthy() {
+		a.docFpsEl.Set("textContent", fmt.Sprintf("%d", a.doc.FPS))
+	}
 	if a.stageCanvas.Truthy() {
 		a.stageCanvas.Get("style").Set("aspectRatio", fmt.Sprintf("%d / %d", a.doc.Width, a.doc.Height))
 	}
@@ -1815,6 +1829,17 @@ func (a *App) clearInstanceSelection() {
 	a.clearTweenSelection()
 }
 
+func (a *App) clearAllSelection() {
+	a.clearInstanceSelection()
+	layers := a.currentLayersPtr()
+	for i := range *layers {
+		(*layers)[i].Selected = false
+	}
+	a.updateSelectedLayerLabel()
+	a.activatePropertiesPanelForSelection()
+	a.updatePropertiesPanel()
+}
+
 func (a *App) clearTweenSelection() {
 	a.selectedTweenLayerIdx = -1
 	a.selectedTweenInstIdx = -1
@@ -2642,6 +2667,10 @@ func (a *App) applyActiveColorPicker() {
 	a.colorPickerAlpha.Set("value", fmt.Sprintf("%.2f", alpha))
 	a.colorPickerAlphaValue.Set("value", fmt.Sprintf("%.2f", alpha))
 	switch a.activeColorField {
+	case "docBg":
+		a.captureUndoSnapshot()
+		a.doc.Background = colorWithAlpha(a.colorPickerColor.Get("value").String(), alpha)
+		a.refreshDocUI()
 	case "toolFill":
 		a.shapeToolFill = colorWithAlpha(a.colorPickerColor.Get("value").String(), alpha)
 	case "toolStroke":
@@ -2887,6 +2916,45 @@ func (a *App) applySelectedTweenEase(mode, dir string) {
 	a.setInstanceKeyframe(a.selectedTweenLayerIdx, a.selectedTweenInstIdx, a.selectedTweenStartFrame, kf)
 }
 
+func (a *App) applyDocumentField(field string, value string) {
+	value = strings.TrimSpace(value)
+	switch field {
+	case "name":
+		if value == "" || value == a.doc.Name {
+			return
+		}
+		a.captureUndoSnapshot()
+		a.doc.Name = value
+		a.refreshDocUI()
+	case "width":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n == a.doc.Width {
+			return
+		}
+		a.captureUndoSnapshot()
+		a.doc.Width = n
+		a.refreshDocUI()
+		a.resizeCanvases()
+	case "height":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n == a.doc.Height {
+			return
+		}
+		a.captureUndoSnapshot()
+		a.doc.Height = n
+		a.refreshDocUI()
+		a.resizeCanvases()
+	case "fps":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n == a.doc.FPS {
+			return
+		}
+		a.captureUndoSnapshot()
+		a.doc.FPS = n
+		a.refreshDocUI()
+	}
+}
+
 func (a *App) addKeyframeForSelectedInstances() {
 	pairs := a.selectedInstancePairsOrPrimary()
 	if len(pairs) == 0 {
@@ -2925,8 +2993,43 @@ func (a *App) updatePropertiesPanel() {
 	if hasSel && (a.selectedLayerIdx < 0 || a.selectedLayerIdx >= len(layers) || a.selectedInstIdx < 0 || a.selectedInstIdx >= len(layers[a.selectedLayerIdx].Instances)) {
 		hasSel = false
 	}
+	d := js.Global().Get("document")
+	setDisplay := func(id, display string) {
+		el := d.Call("getElementById", id)
+		if el.Truthy() {
+			el.Get("style").Set("display", display)
+		}
+	}
+	if hasSel {
+		setDisplay("docPropertiesSection", "none")
+		setDisplay("objectPropertiesSection", "block")
+	} else {
+		setDisplay("docPropertiesSection", "block")
+		setDisplay("objectPropertiesSection", "none")
+	}
 	if a.propName.Truthy() {
 		a.propName.Set("disabled", !hasSel)
+	}
+	docControls := []js.Value{a.propDocName, a.propDocWidth, a.propDocHeight, a.propDocFps, a.propDocBg}
+	for _, c := range docControls {
+		if c.Truthy() {
+			c.Set("disabled", hasSel)
+		}
+	}
+	if a.propDocName.Truthy() {
+		setInputValueIfUnfocused(a.propDocName, a.doc.Name)
+	}
+	if a.propDocWidth.Truthy() {
+		setInputValueIfUnfocused(a.propDocWidth, fmt.Sprintf("%d", a.doc.Width))
+	}
+	if a.propDocHeight.Truthy() {
+		setInputValueIfUnfocused(a.propDocHeight, fmt.Sprintf("%d", a.doc.Height))
+	}
+	if a.propDocFps.Truthy() {
+		setInputValueIfUnfocused(a.propDocFps, fmt.Sprintf("%d", a.doc.FPS))
+	}
+	if a.propDocBg.Truthy() {
+		setColorPickerButtonAppearance(a.propDocBg, a.doc.Background)
 	}
 	transformControls := []js.Value{a.propPosX, a.propPosY, a.propScaleX, a.propScaleY, a.propScaleLock, a.propSkewX, a.propSkewY, a.propRot, a.propRotDec, a.propRotInc, a.propAncX, a.propAncY}
 	shapeControls := []js.Value{a.propFill, a.propStroke, a.propStrokeW, a.toolFill, a.toolStroke}
@@ -2940,15 +3043,6 @@ func (a *App) updatePropertiesPanel() {
 	if !hasSel {
 		if a.propName.Truthy() {
 			setInputValueIfUnfocused(a.propName, "")
-		}
-		if row := a.propFill.Get("parentElement").Get("parentElement"); row.Truthy() {
-			row.Get("style").Set("display", "")
-		}
-		if row := a.propStroke.Get("parentElement").Get("parentElement"); row.Truthy() {
-			row.Get("style").Set("display", "")
-		}
-		if row := a.propStrokeW.Get("parentElement").Get("parentElement"); row.Truthy() {
-			row.Get("style").Set("display", "")
 		}
 		a.updateScaleLockUI()
 		if a.toolFill.Truthy() {
@@ -3843,6 +3937,9 @@ func (a *App) bindUI() {
 	bindNum(a.propAncY, "anchorY")
 	bindShapeNum(a.propStrokeW, "strokeW")
 	openPicker := func(btn js.Value, field string) {
+		if !btn.Truthy() {
+			return
+		}
 		cb := js.FuncOf(func(this js.Value, args []js.Value) any {
 			if len(args) > 0 {
 				args[0].Call("preventDefault")
@@ -3892,6 +3989,7 @@ func (a *App) bindUI() {
 	}
 	openPicker(a.propFill, "fill")
 	openPicker(a.propStroke, "stroke")
+	openPicker(a.propDocBg, "docBg")
 	openPicker(a.toolFill, "toolFill")
 	openPicker(a.toolStroke, "toolStroke")
 	colorPickerStopCb := js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -3943,8 +4041,42 @@ func (a *App) bindUI() {
 		a.applyInstanceName(this.Get("value").String())
 		return nil
 	})
+	docNameCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyDocumentField("name", this.Get("value").String())
+		return nil
+	})
+	docWidthCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyDocumentField("width", this.Get("value").String())
+		return nil
+	})
+	docHeightCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyDocumentField("height", this.Get("value").String())
+		return nil
+	})
+	docFpsCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		a.applyDocumentField("fps", this.Get("value").String())
+		return nil
+	})
 	a.holdCallback(nameCb)
-	a.propName.Call("addEventListener", "change", nameCb)
+	a.holdCallback(docNameCb)
+	a.holdCallback(docWidthCb)
+	a.holdCallback(docHeightCb)
+	a.holdCallback(docFpsCb)
+	if a.propName.Truthy() {
+		a.propName.Call("addEventListener", "change", nameCb)
+	}
+	if a.propDocName.Truthy() {
+		a.propDocName.Call("addEventListener", "change", docNameCb)
+	}
+	if a.propDocWidth.Truthy() {
+		a.propDocWidth.Call("addEventListener", "change", docWidthCb)
+	}
+	if a.propDocHeight.Truthy() {
+		a.propDocHeight.Call("addEventListener", "change", docHeightCb)
+	}
+	if a.propDocFps.Truthy() {
+		a.propDocFps.Call("addEventListener", "change", docFpsCb)
+	}
 	easeModeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applySelectedTweenEase(this.Get("value").String(), a.propEaseDir.Get("value").String())
 		return nil
@@ -4409,6 +4541,18 @@ func (a *App) bindUI() {
 		return nil
 	}))
 	if a.stageViewport.Truthy() {
+		a.stageViewport.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) == 0 {
+				return nil
+			}
+			e := args[0]
+			target := e.Get("target")
+			if target.Truthy() && target.Equal(a.stageCanvas) {
+				return nil
+			}
+			a.clearAllSelection()
+			return nil
+		}))
 		a.stageViewport.Call("addEventListener", "dblclick", js.FuncOf(func(this js.Value, args []js.Value) any {
 			if len(args) == 0 {
 				return nil
@@ -4418,6 +4562,7 @@ func (a *App) bindUI() {
 			if target.Truthy() && target.Equal(a.stageCanvas) {
 				return nil
 			}
+			a.clearAllSelection()
 			a.exitMovieClipTimeline()
 			return nil
 		}))
@@ -4495,7 +4640,7 @@ func (a *App) bindUI() {
 				a.dragMode = "move"
 			} else {
 				if !additive {
-					a.clearInstanceSelection()
+					a.clearAllSelection()
 				}
 				a.marqueeActive = true
 				a.marqueeStartX = x
