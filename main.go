@@ -312,14 +312,16 @@ type App struct {
 
 	doc Document
 
-	stageCanvas js.Value
-	stageCtx    js.Value
+	stageCanvas   js.Value
+	stageCtx      js.Value
+	stageViewport js.Value
 
 	tlCanvas js.Value
 	tlCtx    js.Value
 
 	statusEl               js.Value
 	sceneNameEl            js.Value
+	stageTimelineEl        js.Value
 	docSizeEl              js.Value
 	docFpsEl               js.Value
 	curFrameEl             js.Value
@@ -670,12 +672,14 @@ func (a *App) initDOM() {
 
 	a.stageCanvas = d.Call("getElementById", "stage")
 	a.stageCtx = a.stageCanvas.Call("getContext", "2d")
+	a.stageViewport = d.Call("getElementById", "stageViewport")
 
 	a.tlCanvas = d.Call("getElementById", "timeline")
 	a.tlCtx = a.tlCanvas.Call("getContext", "2d")
 
 	a.statusEl = d.Call("getElementById", "status")
 	a.sceneNameEl = d.Call("getElementById", "sceneNamePill")
+	a.stageTimelineEl = d.Call("getElementById", "stageTimelineBreadcrumb")
 	a.docSizeEl = d.Call("getElementById", "docSize")
 	a.docFpsEl = d.Call("getElementById", "docFps")
 	a.curFrameEl = d.Call("getElementById", "curFrame")
@@ -743,6 +747,9 @@ func (a *App) initDOM() {
 func (a *App) refreshDocUI() {
 	if a.sceneNameEl.Truthy() {
 		a.sceneNameEl.Set("textContent", a.doc.Name)
+	}
+	if a.stageTimelineEl.Truthy() {
+		a.stageTimelineEl.Set("textContent", a.currentTimelineBreadcrumb())
 	}
 	js.Global().Get("document").Set("title", fmt.Sprintf("%s - Animate-like Editor (Go WASM)", a.doc.Name))
 	a.docSizeEl.Set("textContent", fmt.Sprintf("%d x %d px", a.doc.Width, a.doc.Height))
@@ -847,6 +854,14 @@ func (a *App) setRightPanelTab(name string) {
 		} else {
 			a.libraryPanelEl.Get("classList").Call("remove", "active")
 		}
+	}
+}
+
+func (a *App) activatePropertiesPanelForSelection() {
+	a.setRightPanelTab("properties")
+	if a.propertiesPanelEl.Truthy() {
+		a.propertiesPanelEl.Call("setAttribute", "tabindex", "-1")
+		a.propertiesPanelEl.Call("focus")
 	}
 }
 
@@ -2143,6 +2158,9 @@ func (a *App) setPrimarySelection(layerIdx, instIdx int) {
 	if a.selectedTweenLayerIdx != layerIdx || a.selectedTweenInstIdx != instIdx {
 		a.clearTweenSelection()
 	}
+	if layerIdx >= 0 && instIdx >= 0 {
+		a.activatePropertiesPanelForSelection()
+	}
 }
 
 func (a *App) convertSelectedInstanceToSymbol() {
@@ -2443,6 +2461,7 @@ func (a *App) enterMovieClipTimeline(symbolID string) bool {
 			(*layers)[0].Selected = true
 		}
 	}
+	a.refreshDocUI()
 	a.updateSelectedLayerLabel()
 	a.statusEl.Set("textContent", "Entered "+sym.Name)
 	return true
@@ -2454,6 +2473,7 @@ func (a *App) exitMovieClipTimeline() bool {
 	}
 	a.timelinePath = a.timelinePath[:len(a.timelinePath)-1]
 	a.clearInstanceSelection()
+	a.refreshDocUI()
 	a.updateSelectedLayerLabel()
 	a.statusEl.Set("textContent", "Returned to "+a.currentTimelineBreadcrumb())
 	return true
@@ -2921,6 +2941,15 @@ func (a *App) updatePropertiesPanel() {
 		if a.propName.Truthy() {
 			setInputValueIfUnfocused(a.propName, "")
 		}
+		if row := a.propFill.Get("parentElement").Get("parentElement"); row.Truthy() {
+			row.Get("style").Set("display", "")
+		}
+		if row := a.propStroke.Get("parentElement").Get("parentElement"); row.Truthy() {
+			row.Get("style").Set("display", "")
+		}
+		if row := a.propStrokeW.Get("parentElement").Get("parentElement"); row.Truthy() {
+			row.Get("style").Set("display", "")
+		}
 		a.updateScaleLockUI()
 		if a.toolFill.Truthy() {
 			a.toolFill.Set("disabled", false)
@@ -2969,6 +2998,27 @@ func (a *App) updatePropertiesPanel() {
 	a.propFill.Set("disabled", !shape)
 	a.propStroke.Set("disabled", !shape)
 	a.propStrokeW.Set("disabled", !shape)
+	if row := a.propFill.Get("parentElement").Get("parentElement"); row.Truthy() {
+		if shape {
+			row.Get("style").Set("display", "")
+		} else {
+			row.Get("style").Set("display", "none")
+		}
+	}
+	if row := a.propStroke.Get("parentElement").Get("parentElement"); row.Truthy() {
+		if shape {
+			row.Get("style").Set("display", "")
+		} else {
+			row.Get("style").Set("display", "none")
+		}
+	}
+	if row := a.propStrokeW.Get("parentElement").Get("parentElement"); row.Truthy() {
+		if shape {
+			row.Get("style").Set("display", "")
+		} else {
+			row.Get("style").Set("display", "none")
+		}
+	}
 	if a.toolFill.Truthy() {
 		a.toolFill.Set("disabled", false)
 	}
@@ -3238,7 +3288,11 @@ func (a *App) drawInstanceRecursive(ctx js.Value, inst ElementInstance, frame, d
 }
 
 func (a *App) instanceBoundsWorld(layerIdx, instIdx int) (float64, float64, float64, float64, bool) {
-	inst := a.doc.Layers[layerIdx].Instances[instIdx]
+	layers := a.currentLayers()
+	if layerIdx < 0 || layerIdx >= len(layers) || instIdx < 0 || instIdx >= len(layers[layerIdx].Instances) {
+		return 0, 0, 0, 0, false
+	}
+	inst := layers[layerIdx].Instances[instIdx]
 	if !isRenderableInstanceType(inst) {
 		return 0, 0, 0, 0, false
 	}
@@ -3801,9 +3855,13 @@ func (a *App) bindUI() {
 			case "toolStroke":
 				color = a.shapeToolStroke
 			default:
+				layers := a.currentLayers()
 				for _, pair := range a.selectedInstancePairsOrPrimary() {
 					li, ii := pair[0], pair[1]
-					inst := a.doc.Layers[li].Instances[ii]
+					if li < 0 || li >= len(layers) || ii < 0 || ii >= len(layers[li].Instances) {
+						continue
+					}
+					inst := layers[li].Instances[ii]
 					if inst.ElementType == "path" {
 						if p, ok := a.findPathByID(inst.ElementID); ok {
 							if field == "fill" {
@@ -4236,7 +4294,7 @@ func (a *App) bindUI() {
 			return nil
 		}
 		layerIdx := int((y - rowTop) / a.layerH)
-		if layerIdx < 0 || layerIdx >= len(a.doc.Layers) {
+		if layerIdx < 0 || layerIdx >= len(a.currentLayers()) {
 			return nil
 		}
 		e.Call("preventDefault")
@@ -4256,7 +4314,7 @@ func (a *App) bindUI() {
 			rowTop := 14.0
 			if y >= rowTop {
 				layerIdx := int((y - rowTop) / a.layerH)
-				if layerIdx >= 0 && layerIdx < len(a.doc.Layers) {
+				if layerIdx >= 0 && layerIdx < len(a.currentLayers()) {
 					additive := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool()
 					a.selectLayer(layerIdx, additive)
 					return nil
@@ -4350,6 +4408,20 @@ func (a *App) bindUI() {
 		a.exitMovieClipTimeline()
 		return nil
 	}))
+	if a.stageViewport.Truthy() {
+		a.stageViewport.Call("addEventListener", "dblclick", js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) == 0 {
+				return nil
+			}
+			e := args[0]
+			target := e.Get("target")
+			if target.Truthy() && target.Equal(a.stageCanvas) {
+				return nil
+			}
+			a.exitMovieClipTimeline()
+			return nil
+		}))
+	}
 	a.stageCanvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) any {
 		e := args[0]
 		x := e.Get("offsetX").Float()
@@ -5076,17 +5148,6 @@ func (a *App) renderStage() {
 			}
 		}
 	}
-
-	// timeline breadcrumb overlay
-	ctx.Set("fillStyle", "rgba(20, 22, 24, 0.78)")
-	ctx.Call("fillRect", 10, 10, math.Min(w-20, 360), 26)
-	ctx.Set("strokeStyle", "rgba(255,255,255,0.12)")
-	ctx.Set("lineWidth", 1)
-	ctx.Call("strokeRect", 10, 10, math.Min(w-20, 360), 26)
-	ctx.Set("fillStyle", "rgba(255,255,255,0.92)")
-	ctx.Set("font", "12px system-ui")
-	ctx.Call("fillText", a.currentTimelineBreadcrumb(), 18, 27)
-
 	// stage border vibe
 	ctx.Set("strokeStyle", "rgba(0,0,0,0.25)")
 	ctx.Set("lineWidth", 2)

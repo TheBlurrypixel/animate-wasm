@@ -336,7 +336,24 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 }
 
 .center{ background:#111214; display:flex; min-height:0; }
-.stageWrap{ flex:1; padding:10px; display:flex; align-items:center; justify-content:center; min-height:0; }
+.stageWrap{ flex:1; padding:10px; display:flex; flex-direction:column; gap:10px; min-height:0; }
+.stageTimelineBreadcrumb{
+  flex:0 0 auto;
+  min-height:26px;
+  padding:6px 10px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:rgba(35,38,42,0.92);
+  color:rgba(255,255,255,0.92);
+  font:12px/1.2 system-ui;
+}
+.stageViewport{
+  flex:1 1 auto;
+  min-height:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
 #stage{
   width:min(980px, 100%); height:auto; aspect-ratio:16/9;
   background:#202428; border:1px solid var(--line); border-radius:12px;
