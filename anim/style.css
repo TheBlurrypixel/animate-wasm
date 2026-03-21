@@ -132,6 +132,11 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 }
 
 .menuItem{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  width:100%;
   padding:8px 10px;
   text-align:left;
   border:none;
@@ -147,6 +152,12 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 .menuItem.active{
   background:#3a3f45;
   color:var(--accent);
+}
+
+.menuShortcut{
+  color:#8f949b;
+  font-size:12px;
+  flex:0 0 auto;
 }
 
 .menuDivider{

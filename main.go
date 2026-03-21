@@ -117,7 +117,7 @@ func newDefaultDocument() Document {
 		Name:        "scene-1",
 		Width:       640,
 		Height:      360,
-		FPS:         24,
+		FPS:         30,
 		Background:  "#808080",
 		TotalFrames: 120,
 		Layers: []Layer{
@@ -464,6 +464,7 @@ type App struct {
 	redoStack               []appSnapshot
 	historyBatchOpen        bool
 	suspendHistory          bool
+	clipboardInstances      []ElementInstance
 
 	heldCallbacks []js.Func
 }
@@ -1409,6 +1410,20 @@ func (a *App) nextPathID() string {
 	return fmt.Sprintf("path-%d", len(a.doc.Paths)+1)
 }
 
+func (a *App) nextInstanceID() string {
+	return fmt.Sprintf("instance-%d", time.Now().UnixNano())
+}
+
+func (a *App) currentSelectedLayerIndexStrict() int {
+	layers := a.currentLayers()
+	for i := range layers {
+		if layers[i].Selected {
+			return i
+		}
+	}
+	return -1
+}
+
 func (a *App) selectedLayerIndexes() []int {
 	layers := a.currentLayersPtr()
 	selected := make([]int, 0, len(*layers))
@@ -2023,6 +2038,103 @@ func (a *App) deleteInstance(layerIdx, instIdx int) {
 	a.statusEl.Set("textContent", "Instance deleted")
 }
 
+func (a *App) copySelectedInstancesToClipboard() int {
+	pairs := a.selectedInstancePairsOrPrimary()
+	if len(pairs) == 0 {
+		a.clipboardInstances = nil
+		return 0
+	}
+	for i := 0; i < len(pairs); i++ {
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j][0] < pairs[i][0] || (pairs[j][0] == pairs[i][0] && pairs[j][1] < pairs[i][1]) {
+				pairs[i], pairs[j] = pairs[j], pairs[i]
+			}
+		}
+	}
+	layers := a.currentLayers()
+	items := make([]ElementInstance, 0, len(pairs))
+	for _, pair := range pairs {
+		items = append(items, cloneInstance(layers[pair[0]].Instances[pair[1]]))
+	}
+	a.clipboardInstances = items
+	return len(items)
+}
+
+func (a *App) cutSelectedInstancesToClipboard() int {
+	pairs := a.selectedInstancePairsOrPrimary()
+	if len(pairs) == 0 {
+		a.clipboardInstances = nil
+		return 0
+	}
+	count := a.copySelectedInstancesToClipboard()
+	if count == 0 {
+		return 0
+	}
+	a.captureUndoSnapshot()
+	for i := 0; i < len(pairs); i++ {
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j][0] > pairs[i][0] || (pairs[j][0] == pairs[i][0] && pairs[j][1] > pairs[i][1]) {
+				pairs[i], pairs[j] = pairs[j], pairs[i]
+			}
+		}
+	}
+	layers := a.currentLayersPtr()
+	for _, pair := range pairs {
+		li, ii := pair[0], pair[1]
+		if li < 0 || li >= len(*layers) || ii < 0 || ii >= len((*layers)[li].Instances) {
+			continue
+		}
+		(*layers)[li].Instances = append((*layers)[li].Instances[:ii], (*layers)[li].Instances[ii+1:]...)
+	}
+	a.clearInstanceSelection()
+	a.updateSelectedLayerLabel()
+	a.updatePropertiesPanel()
+	return count
+}
+
+func (a *App) pasteClipboardToStage() int {
+	if len(a.clipboardInstances) == 0 {
+		return 0
+	}
+	a.captureUndoSnapshot()
+	layers := a.currentLayersPtr()
+	layerIdx := a.currentSelectedLayerIndexStrict()
+	if layerIdx < 0 {
+		for i := range *layers {
+			(*layers)[i].Selected = false
+		}
+		n := len(*layers) + 1
+		newLayer := Layer{
+			Name:        fmt.Sprintf("Layer %d", n),
+			Description: fmt.Sprintf("User created layer %d", n),
+			Color:       "#c77dff",
+			Selected:    true,
+			Instances:   []ElementInstance{},
+		}
+		*layers = append([]Layer{newLayer}, (*layers)...)
+		layerIdx = 0
+	}
+	for i := range *layers {
+		(*layers)[i].Selected = i == layerIdx
+	}
+	pasted := cloneInstances(a.clipboardInstances)
+	startIdx := len((*layers)[layerIdx].Instances)
+	for i := range pasted {
+		pasted[i].ID = fmt.Sprintf("%s-%d", a.nextInstanceID(), i)
+		(*layers)[layerIdx].Instances = append((*layers)[layerIdx].Instances, pasted[i])
+	}
+	a.selectedInstances = make(map[string]bool, len(pasted))
+	for i := range pasted {
+		a.selectedInstances[selKey(layerIdx, startIdx+i)] = true
+	}
+	if len(pasted) > 0 {
+		a.setPrimarySelection(layerIdx, startIdx)
+	}
+	a.updateSelectedLayerLabel()
+	a.updatePropertiesPanel()
+	return len(pasted)
+}
+
 func (a *App) closeDocumentDialog() {
 	if a.docDialog.Truthy() {
 		a.docDialog.Get("classList").Call("remove", "open")
@@ -2389,6 +2501,14 @@ func cloneInstance(inst ElementInstance) ElementInstance {
 	copy := inst
 	copy.Keyframes = cloneKeyframes(inst.Keyframes)
 	return copy
+}
+
+func cloneInstances(src []ElementInstance) []ElementInstance {
+	out := make([]ElementInstance, 0, len(src))
+	for _, inst := range src {
+		out = append(out, cloneInstance(inst))
+	}
+	return out
 }
 
 func dist(x1, y1, x2, y2 float64) float64 { return math.Hypot(x1-x2, y1-y2) }
@@ -4366,6 +4486,42 @@ func (a *App) bindUI() {
 			a.redo()
 			return nil
 		}
+		if mod && strings.EqualFold(key, "x") {
+			e.Call("preventDefault")
+			count := a.cutSelectedInstancesToClipboard()
+			if count == 0 {
+				a.statusEl.Set("textContent", "Select object instances to cut")
+			} else if count == 1 {
+				a.statusEl.Set("textContent", "1 object cut to clipboard")
+			} else {
+				a.statusEl.Set("textContent", fmt.Sprintf("%d objects cut to clipboard", count))
+			}
+			return nil
+		}
+		if mod && strings.EqualFold(key, "c") {
+			e.Call("preventDefault")
+			count := a.copySelectedInstancesToClipboard()
+			if count == 0 {
+				a.statusEl.Set("textContent", "Select object instances to copy")
+			} else if count == 1 {
+				a.statusEl.Set("textContent", "1 object copied to clipboard")
+			} else {
+				a.statusEl.Set("textContent", fmt.Sprintf("%d objects copied to clipboard", count))
+			}
+			return nil
+		}
+		if mod && strings.EqualFold(key, "v") {
+			e.Call("preventDefault")
+			count := a.pasteClipboardToStage()
+			if count == 0 {
+				a.statusEl.Set("textContent", "Clipboard is empty")
+			} else if count == 1 {
+				a.statusEl.Set("textContent", "1 object pasted")
+			} else {
+				a.statusEl.Set("textContent", fmt.Sprintf("%d objects pasted", count))
+			}
+			return nil
+		}
 		if key == " " {
 			e.Call("preventDefault")
 			a.playing = !a.playing
@@ -5579,13 +5735,40 @@ func (a *App) handleMenuAction(action string) {
 		a.openSettingsDialog()
 
 	case "edit.cut":
-		a.statusEl.Set("textContent", "Cut requested")
+		count := a.cutSelectedInstancesToClipboard()
+		if count == 0 {
+			a.statusEl.Set("textContent", "Select object instances to cut")
+			return
+		}
+		if count == 1 {
+			a.statusEl.Set("textContent", "1 object cut to clipboard")
+		} else {
+			a.statusEl.Set("textContent", fmt.Sprintf("%d objects cut to clipboard", count))
+		}
 
 	case "edit.copy":
-		a.statusEl.Set("textContent", "Copy requested")
+		count := a.copySelectedInstancesToClipboard()
+		if count == 0 {
+			a.statusEl.Set("textContent", "Select object instances to copy")
+			return
+		}
+		if count == 1 {
+			a.statusEl.Set("textContent", "1 object copied to clipboard")
+		} else {
+			a.statusEl.Set("textContent", fmt.Sprintf("%d objects copied to clipboard", count))
+		}
 
 	case "edit.paste":
-		a.statusEl.Set("textContent", "Paste requested")
+		count := a.pasteClipboardToStage()
+		if count == 0 {
+			a.statusEl.Set("textContent", "Clipboard is empty")
+			return
+		}
+		if count == 1 {
+			a.statusEl.Set("textContent", "1 object pasted")
+		} else {
+			a.statusEl.Set("textContent", fmt.Sprintf("%d objects pasted", count))
+		}
 
 	case "view.zoomIn":
 		a.zoom = math.Min(a.zoom*1.25, 40)
