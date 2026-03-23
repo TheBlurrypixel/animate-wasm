@@ -369,6 +369,7 @@ type App struct {
 	propEaseDir            js.Value
 	layerCtxMenu           js.Value
 	stageCtxMenu           js.Value
+	pathCtxMenu            js.Value
 	keyframeCtxMenu        js.Value
 	autoKeyBtn             js.Value
 	docDialog              js.Value
@@ -443,45 +444,53 @@ type App struct {
 	penMouseX    float64
 	penMouseY    float64
 
-	selectedLayerIdx        int
-	selectedInstIdx         int
-	selectedInstances       map[string]bool
-	selectedPathPt          int
-	selectedHandle          string
-	selectedTweenLayerIdx   int
-	selectedTweenInstIdx    int
-	selectedTweenStartFrame int
-	selectedTweenEndFrame   int
-	layerCtxTargetIdx       int
-	stageCtxLayerIdx        int
-	stageCtxInstIdx         int
-	keyframeCtxLayerIdx     int
-	keyframeCtxFrame        int
-	selectedLibrarySymbolID string
-	dragLibrarySymbolID     string
-	dragLibraryClientX      float64
-	dragLibraryClientY      float64
-	dragLibraryStageX       float64
-	dragLibraryStageY       float64
-	dragLibraryOverStage    bool
-	dragMode                string
-	lastMouseX              float64
-	lastMouseY              float64
-	marqueeActive           bool
-	marqueeStartX           float64
-	marqueeStartY           float64
-	marqueeNowX             float64
-	marqueeNowY             float64
-	marqueeAdditive         bool
-	undoStack               []appSnapshot
-	redoStack               []appSnapshot
-	historyBatchOpen        bool
-	suspendHistory          bool
-	clipboardInstances      []ElementInstance
-	scriptDirty             bool
-	lastScriptFrame         int
-	lastScriptTimelineKey   string
-	globalScriptDirty       bool
+	selectedLayerIdx            int
+	selectedInstIdx             int
+	selectedInstances           map[string]bool
+	selectedPathPt              int
+	selectedHandle              string
+	subselectNormalizeCandidate bool
+	subselectDragMoved          bool
+	selectedTweenLayerIdx       int
+	selectedTweenInstIdx        int
+	selectedTweenStartFrame     int
+	selectedTweenEndFrame       int
+	layerCtxTargetIdx           int
+	stageCtxLayerIdx            int
+	stageCtxInstIdx             int
+	pathCtxLayerIdx             int
+	pathCtxInstIdx              int
+	pathCtxPathIdx              int
+	pathCtxAnchorIdx            int
+	pathCtxSegmentIdx           int
+	pathCtxSegmentT             float64
+	keyframeCtxLayerIdx         int
+	keyframeCtxFrame            int
+	selectedLibrarySymbolID     string
+	dragLibrarySymbolID         string
+	dragLibraryClientX          float64
+	dragLibraryClientY          float64
+	dragLibraryStageX           float64
+	dragLibraryStageY           float64
+	dragLibraryOverStage        bool
+	dragMode                    string
+	lastMouseX                  float64
+	lastMouseY                  float64
+	marqueeActive               bool
+	marqueeStartX               float64
+	marqueeStartY               float64
+	marqueeNowX                 float64
+	marqueeNowY                 float64
+	marqueeAdditive             bool
+	undoStack                   []appSnapshot
+	redoStack                   []appSnapshot
+	historyBatchOpen            bool
+	suspendHistory              bool
+	clipboardInstances          []ElementInstance
+	scriptDirty                 bool
+	lastScriptFrame             int
+	lastScriptTimelineKey       string
+	globalScriptDirty           bool
 
 	heldCallbacks []js.Func
 }
@@ -671,6 +680,11 @@ func main() {
 		layerCtxTargetIdx:       -1,
 		stageCtxLayerIdx:        -1,
 		stageCtxInstIdx:         -1,
+		pathCtxLayerIdx:         -1,
+		pathCtxInstIdx:          -1,
+		pathCtxPathIdx:          -1,
+		pathCtxAnchorIdx:        -1,
+		pathCtxSegmentIdx:       -1,
 		keyframeCtxLayerIdx:     -1,
 		keyframeCtxFrame:        -1,
 	}
@@ -750,6 +764,7 @@ func (a *App) initDOM() {
 	a.propEaseDir = d.Call("getElementById", "propEaseDir")
 	a.layerCtxMenu = d.Call("getElementById", "layerContextMenu")
 	a.stageCtxMenu = d.Call("getElementById", "stageContextMenu")
+	a.pathCtxMenu = d.Call("getElementById", "pathContextMenu")
 	a.keyframeCtxMenu = d.Call("getElementById", "keyframeContextMenu")
 	a.autoKeyBtn = d.Call("getElementById", "btn-autokey")
 	a.docDialog = d.Call("getElementById", "docDialog")
@@ -1921,6 +1936,18 @@ func (a *App) closeStageContextMenu() {
 	a.stageCtxInstIdx = -1
 }
 
+func (a *App) closePathContextMenu() {
+	if a.pathCtxMenu.Truthy() {
+		a.pathCtxMenu.Get("classList").Call("remove", "open")
+	}
+	a.pathCtxLayerIdx = -1
+	a.pathCtxInstIdx = -1
+	a.pathCtxPathIdx = -1
+	a.pathCtxAnchorIdx = -1
+	a.pathCtxSegmentIdx = -1
+	a.pathCtxSegmentT = 0
+}
+
 func (a *App) closeKeyframeContextMenu() {
 	if a.keyframeCtxMenu.Truthy() {
 		a.keyframeCtxMenu.Get("classList").Call("remove", "open")
@@ -1948,6 +1975,30 @@ func (a *App) openStageContextMenu(layerIdx, instIdx int, clientX, clientY float
 	a.stageCtxMenu.Get("style").Set("left", fmt.Sprintf("%.0fpx", clientX))
 	a.stageCtxMenu.Get("style").Set("top", fmt.Sprintf("%.0fpx", clientY))
 	a.stageCtxMenu.Get("classList").Call("add", "open")
+}
+
+func (a *App) openPathContextMenu(layerIdx, instIdx, pathIdx, anchorIdx, segmentIdx int, segmentT, clientX, clientY float64) {
+	if !a.pathCtxMenu.Truthy() {
+		return
+	}
+	a.pathCtxLayerIdx = layerIdx
+	a.pathCtxInstIdx = instIdx
+	a.pathCtxPathIdx = pathIdx
+	a.pathCtxAnchorIdx = anchorIdx
+	a.pathCtxSegmentIdx = segmentIdx
+	a.pathCtxSegmentT = segmentT
+	insertBtn := js.Global().Get("document").Call("getElementById", "ctx-insert-anchor")
+	deleteBtn := js.Global().Get("document").Call("getElementById", "ctx-delete-anchor")
+	onAnchor := anchorIdx >= 0
+	if insertBtn.Truthy() {
+		insertBtn.Set("disabled", onAnchor)
+	}
+	if deleteBtn.Truthy() {
+		deleteBtn.Set("disabled", !onAnchor)
+	}
+	a.pathCtxMenu.Get("style").Set("left", fmt.Sprintf("%.0fpx", clientX))
+	a.pathCtxMenu.Get("style").Set("top", fmt.Sprintf("%.0fpx", clientY))
+	a.pathCtxMenu.Get("classList").Call("add", "open")
 }
 
 func (a *App) openKeyframeContextMenu(layerIdx, frame int, clientX, clientY float64) {
@@ -3719,6 +3770,91 @@ func (a *App) pickInstanceAt(x, y float64) (int, int, bool) {
 	return -1, -1, false
 }
 
+func lerpPoint(x0, y0, x1, y1, t float64) (float64, float64) {
+	return x0 + (x1-x0)*t, y0 + (y1-y0)*t
+}
+
+func cubicSegmentPoint(p0, p1 BezierPoint, t float64) (float64, float64) {
+	ax, ay := lerpPoint(p0.X, p0.Y, p0.OutX, p0.OutY, t)
+	bx, by := lerpPoint(p0.OutX, p0.OutY, p1.InX, p1.InY, t)
+	cx, cy := lerpPoint(p1.InX, p1.InY, p1.X, p1.Y, t)
+	dx, dy := lerpPoint(ax, ay, bx, by, t)
+	ex, ey := lerpPoint(bx, by, cx, cy, t)
+	return lerpPoint(dx, dy, ex, ey, t)
+}
+
+func (a *App) pickPathContextTarget(x, y float64) (int, int, int, int, int, float64, bool) {
+	layers := a.currentLayers()
+	bestDist := 9.0
+	bestLayer, bestInst, bestPath := -1, -1, -1
+	bestAnchor, bestSeg := -1, -1
+	bestT := 0.0
+	for li := len(layers) - 1; li >= 0; li-- {
+		for ii := len(layers[li].Instances) - 1; ii >= 0; ii-- {
+			inst := layers[li].Instances[ii]
+			if inst.ElementType != "path" {
+				continue
+			}
+			pathIdx := -1
+			for pi := range a.doc.Paths {
+				if a.doc.Paths[pi].ID == inst.ElementID {
+					pathIdx = pi
+					break
+				}
+			}
+			if pathIdx < 0 {
+				continue
+			}
+			kf, ok := a.getInstanceKeyframe(li, ii, a.curFrame)
+			if !ok {
+				continue
+			}
+			m := instanceMatrix(kf)
+			path := a.doc.Paths[pathIdx]
+			for ai, pt := range path.Points {
+				ax, ay := matApply(m, pt.X, pt.Y)
+				d := dist(x, y, ax, ay)
+				if d <= bestDist {
+					bestDist = d
+					bestLayer, bestInst, bestPath = li, ii, pathIdx
+					bestAnchor = ai
+					bestSeg = -1
+					bestT = 0
+				}
+			}
+			segCount := len(path.Points) - 1
+			if path.Closed {
+				segCount = len(path.Points)
+			}
+			for si := 0; si < segCount; si++ {
+				next := si + 1
+				if next >= len(path.Points) {
+					next = 0
+				}
+				p0 := path.Points[si]
+				p1 := path.Points[next]
+				for step := 0; step <= 24; step++ {
+					t := float64(step) / 24.0
+					ax, ay := cubicSegmentPoint(p0, p1, t)
+					wx, wy := matApply(m, ax, ay)
+					d := dist(x, y, wx, wy)
+					if d < bestDist {
+						bestDist = d
+						bestLayer, bestInst, bestPath = li, ii, pathIdx
+						bestAnchor = -1
+						bestSeg = si
+						bestT = t
+					}
+				}
+			}
+		}
+	}
+	if bestLayer < 0 {
+		return -1, -1, -1, -1, -1, 0, false
+	}
+	return bestLayer, bestInst, bestPath, bestAnchor, bestSeg, bestT, true
+}
+
 func (a *App) selectedAnchorWorld() (float64, float64, bool) {
 	if a.selectedLayerIdx < 0 || a.selectedInstIdx < 0 {
 		return 0, 0, false
@@ -3788,6 +3924,210 @@ func movePointHandleIndependent(pt BezierPoint, handle string, x, y float64) Bez
 		pt.OutY = y
 	}
 	return pt
+}
+
+func pointHandlesMirrored(pt BezierPoint) bool {
+	inVX := pt.InX - pt.X
+	inVY := pt.InY - pt.Y
+	outVX := pt.OutX - pt.X
+	outVY := pt.OutY - pt.Y
+	inLen := math.Hypot(inVX, inVY)
+	outLen := math.Hypot(outVX, outVY)
+	if inLen < 1e-4 || outLen < 1e-4 {
+		return false
+	}
+	if math.Abs(inLen-outLen) > 1e-3 {
+		return false
+	}
+	dot := inVX*outVX + inVY*outVY
+	return math.Abs(dot/(inLen*outLen)+1) <= 1e-3
+}
+
+func movePointHandleMirrored(pt BezierPoint, handle string, x, y float64) BezierPoint {
+	switch handle {
+	case "in":
+		pt.InX = x
+		pt.InY = y
+		pt.OutX = 2*pt.X - x
+		pt.OutY = 2*pt.Y - y
+	case "out":
+		pt.OutX = x
+		pt.OutY = y
+		pt.InX = 2*pt.X - x
+		pt.InY = 2*pt.Y - y
+	}
+	return pt
+}
+
+func smoothPathPointTangents(path VectorPath, idx int) BezierPoint {
+	if idx < 0 || idx >= len(path.Points) {
+		return BezierPoint{}
+	}
+	pt := path.Points[idx]
+	var (
+		prev    BezierPoint
+		next    BezierPoint
+		hasPrev bool
+		hasNext bool
+	)
+	if idx > 0 {
+		prev = path.Points[idx-1]
+		hasPrev = true
+	} else if path.Closed && len(path.Points) > 1 {
+		prev = path.Points[len(path.Points)-1]
+		hasPrev = true
+	}
+	if idx < len(path.Points)-1 {
+		next = path.Points[idx+1]
+		hasNext = true
+	} else if path.Closed && len(path.Points) > 1 {
+		next = path.Points[0]
+		hasNext = true
+	}
+
+	dx, dy := 1.0, 0.0
+	switch {
+	case hasPrev && hasNext:
+		dx = next.X - prev.X
+		dy = next.Y - prev.Y
+	case hasNext:
+		dx = next.X - pt.X
+		dy = next.Y - pt.Y
+	case hasPrev:
+		dx = pt.X - prev.X
+		dy = pt.Y - prev.Y
+	}
+	dlen := math.Hypot(dx, dy)
+	if dlen < 1e-4 {
+		dx, dy = 1, 0
+		dlen = 1
+	}
+	dx /= dlen
+	dy /= dlen
+
+	inLen := math.Hypot(pt.InX-pt.X, pt.InY-pt.Y)
+	outLen := math.Hypot(pt.OutX-pt.X, pt.OutY-pt.Y)
+	targetLen := 0.0
+	count := 0.0
+	if inLen > 1e-4 {
+		targetLen += inLen
+		count++
+	}
+	if outLen > 1e-4 {
+		targetLen += outLen
+		count++
+	}
+	if count > 0 {
+		targetLen /= count
+	} else {
+		ref := 24.0
+		if hasPrev && hasNext {
+			ref = math.Min(math.Hypot(pt.X-prev.X, pt.Y-prev.Y), math.Hypot(next.X-pt.X, next.Y-pt.Y)) / 3
+		} else if hasPrev {
+			ref = math.Hypot(pt.X-prev.X, pt.Y-prev.Y) / 3
+		} else if hasNext {
+			ref = math.Hypot(next.X-pt.X, next.Y-pt.Y) / 3
+		}
+		if ref < 8 {
+			ref = 8
+		}
+		targetLen = ref
+	}
+
+	pt.InX = pt.X - dx*targetLen
+	pt.InY = pt.Y - dy*targetLen
+	pt.OutX = pt.X + dx*targetLen
+	pt.OutY = pt.Y + dy*targetLen
+	return pt
+}
+
+func splitPathSegment(path *VectorPath, segIdx int, t float64) bool {
+	if path == nil || len(path.Points) < 2 || segIdx < 0 {
+		return false
+	}
+	segCount := len(path.Points) - 1
+	if path.Closed {
+		segCount = len(path.Points)
+	}
+	if segIdx >= segCount {
+		return false
+	}
+	if t <= 0.001 || t >= 0.999 {
+		return false
+	}
+	next := segIdx + 1
+	if next >= len(path.Points) {
+		next = 0
+	}
+	p0 := path.Points[segIdx]
+	p1 := path.Points[next]
+	ax, ay := lerpPoint(p0.X, p0.Y, p0.OutX, p0.OutY, t)
+	bx, by := lerpPoint(p0.OutX, p0.OutY, p1.InX, p1.InY, t)
+	cx, cy := lerpPoint(p1.InX, p1.InY, p1.X, p1.Y, t)
+	dx, dy := lerpPoint(ax, ay, bx, by, t)
+	ex, ey := lerpPoint(bx, by, cx, cy, t)
+	fx, fy := lerpPoint(dx, dy, ex, ey, t)
+
+	path.Points[segIdx].OutX = ax
+	path.Points[segIdx].OutY = ay
+	path.Points[next].InX = cx
+	path.Points[next].InY = cy
+	newPt := BezierPoint{
+		X:    fx,
+		Y:    fy,
+		InX:  dx,
+		InY:  dy,
+		OutX: ex,
+		OutY: ey,
+	}
+	insertIdx := next
+	if path.Closed && next == 0 {
+		path.Points = append(path.Points, newPt)
+		return true
+	}
+	path.Points = append(path.Points[:insertIdx], append([]BezierPoint{newPt}, path.Points[insertIdx:]...)...)
+	return true
+}
+
+func (a *App) insertAnchorPointAtContext() bool {
+	if a.pathCtxPathIdx < 0 || a.pathCtxPathIdx >= len(a.doc.Paths) || a.pathCtxSegmentIdx < 0 {
+		return false
+	}
+	a.captureUndoSnapshot()
+	if !splitPathSegment(&a.doc.Paths[a.pathCtxPathIdx], a.pathCtxSegmentIdx, a.pathCtxSegmentT) {
+		return false
+	}
+	path := a.doc.Paths[a.pathCtxPathIdx]
+	insertIdx := a.pathCtxSegmentIdx + 1
+	if path.Closed && insertIdx >= len(path.Points) {
+		insertIdx = len(path.Points) - 1
+	}
+	a.setSingleInstanceSelection(a.pathCtxLayerIdx, a.pathCtxInstIdx)
+	a.selectedPathPt = insertIdx
+	a.selectedHandle = "anchor"
+	return true
+}
+
+func (a *App) deleteAnchorPointAtContext() bool {
+	if a.pathCtxPathIdx < 0 || a.pathCtxPathIdx >= len(a.doc.Paths) || a.pathCtxAnchorIdx < 0 {
+		return false
+	}
+	path := &a.doc.Paths[a.pathCtxPathIdx]
+	minPoints := 2
+	if path.Closed {
+		minPoints = 3
+	}
+	if len(path.Points) <= minPoints {
+		return false
+	}
+	a.captureUndoSnapshot()
+	idx := a.pathCtxAnchorIdx
+	path.Points = append(path.Points[:idx], path.Points[idx+1:]...)
+	if a.selectedPathPt >= len(path.Points) {
+		a.selectedPathPt = len(path.Points) - 1
+	}
+	a.selectedHandle = "anchor"
+	return true
 }
 
 func (a *App) clearPenDraft() {
@@ -4564,6 +4904,32 @@ func (a *App) bindUI() {
 		a.convertSelectedInstanceToSymbol()
 		return nil
 	})
+	pathInsertCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			args[0].Call("preventDefault")
+			args[0].Call("stopPropagation")
+		}
+		if a.insertAnchorPointAtContext() {
+			a.statusEl.Set("textContent", "Anchor point inserted")
+		} else {
+			a.statusEl.Set("textContent", "Insert Anchor Point unavailable")
+		}
+		a.closePathContextMenu()
+		return nil
+	})
+	pathDeleteCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) > 0 {
+			args[0].Call("preventDefault")
+			args[0].Call("stopPropagation")
+		}
+		if a.deleteAnchorPointAtContext() {
+			a.statusEl.Set("textContent", "Anchor point deleted")
+		} else {
+			a.statusEl.Set("textContent", "Delete Anchor Point unavailable")
+		}
+		a.closePathContextMenu()
+		return nil
+	})
 	keyframeDeleteCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) > 0 {
 			args[0].Call("preventDefault")
@@ -4579,11 +4945,15 @@ func (a *App) bindUI() {
 	a.holdCallback(layerDeleteCb)
 	a.holdCallback(stageDeleteCb)
 	a.holdCallback(stageConvertCb)
+	a.holdCallback(pathInsertCb)
+	a.holdCallback(pathDeleteCb)
 	a.holdCallback(keyframeDeleteCb)
 	js.Global().Get("document").Call("getElementById", "ctx-rename-layer").Call("addEventListener", "click", layerRenameCb)
 	js.Global().Get("document").Call("getElementById", "ctx-delete-layer").Call("addEventListener", "click", layerDeleteCb)
 	js.Global().Get("document").Call("getElementById", "ctx-convert-to-symbol").Call("addEventListener", "click", stageConvertCb)
 	js.Global().Get("document").Call("getElementById", "ctx-delete-instance").Call("addEventListener", "click", stageDeleteCb)
+	js.Global().Get("document").Call("getElementById", "ctx-insert-anchor").Call("addEventListener", "click", pathInsertCb)
+	js.Global().Get("document").Call("getElementById", "ctx-delete-anchor").Call("addEventListener", "click", pathDeleteCb)
 	js.Global().Get("document").Call("getElementById", "ctx-delete-keyframe").Call("addEventListener", "click", keyframeDeleteCb)
 	rotDecCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applyRotationDelta(-5 * math.Pi / 180)
@@ -4683,6 +5053,7 @@ func (a *App) bindUI() {
 	d.Call("addEventListener", "click", js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
+		a.closePathContextMenu()
 		a.closeKeyframeContextMenu()
 		a.closeShapeToolMenu()
 		a.closeColorPicker()
@@ -4712,6 +5083,7 @@ func (a *App) bindUI() {
 		mod := e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool()
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
+		a.closePathContextMenu()
 		a.closeKeyframeContextMenu()
 		if key == "Escape" {
 			a.closeShapeToolMenu()
@@ -4931,7 +5303,26 @@ func (a *App) bindUI() {
 		y := e.Get("offsetY").Float()
 		a.closeLayerContextMenu()
 		a.closeStageContextMenu()
+		a.closePathContextMenu()
 		if li, ii, ok := a.pickInstanceAt(x, y); ok {
+			if a.activeTool == "subselect" {
+				if pli, pii, pathIdx, anchorIdx, segIdx, segT, ok := a.pickPathContextTarget(x, y); ok {
+					e.Call("preventDefault")
+					e.Call("stopPropagation")
+					a.setSingleInstanceSelection(pli, pii)
+					layers := a.currentLayersPtr()
+					for i := range *layers {
+						(*layers)[i].Selected = i == pli
+					}
+					a.updateSelectedLayerLabel()
+					if anchorIdx >= 0 {
+						a.selectedPathPt = anchorIdx
+						a.selectedHandle = "anchor"
+					}
+					a.openPathContextMenu(pli, pii, pathIdx, anchorIdx, segIdx, segT, e.Get("clientX").Float(), e.Get("clientY").Float())
+					return nil
+				}
+			}
 			e.Call("preventDefault")
 			e.Call("stopPropagation")
 			a.setSingleInstanceSelection(li, ii)
@@ -5074,6 +5465,8 @@ func (a *App) bindUI() {
 			a.lastMouseX = x
 			a.lastMouseY = y
 			a.dragMode = ""
+			a.subselectNormalizeCandidate = false
+			a.subselectDragMoved = false
 			if a.selectedLayerIdx < 0 || a.selectedInstIdx < 0 {
 				if li, ii, ok := a.pickInstanceAt(x, y); ok {
 					a.setSingleInstanceSelection(li, ii)
@@ -5085,6 +5478,7 @@ func (a *App) bindUI() {
 			if inst.ElementType != "path" {
 				return nil
 			}
+			prevSelectedPt := a.selectedPathPt
 			p, ok := a.findPathByID(inst.ElementID)
 			if !ok {
 				return nil
@@ -5123,6 +5517,7 @@ func (a *App) bindUI() {
 			a.selectedPathPt = closest
 			a.selectedHandle = closestHandle
 			if closest >= 0 {
+				a.subselectNormalizeCandidate = e.Get("altKey").Bool() && closestHandle == "anchor" && closest == prevSelectedPt
 				a.beginHistoryBatch()
 				a.dragMode = "subselect"
 			}
@@ -5239,6 +5634,9 @@ func (a *App) bindUI() {
 		}
 
 		if a.dragMode == "subselect" && a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 && a.selectedPathPt >= 0 {
+			if math.Hypot(x-a.lastMouseX, y-a.lastMouseY) > 1 {
+				a.subselectDragMoved = true
+			}
 			inst := a.currentLayers()[a.selectedLayerIdx].Instances[a.selectedInstIdx]
 			if inst.ElementType == "path" {
 				for pi := range a.doc.Paths {
@@ -5256,6 +5654,7 @@ func (a *App) bindUI() {
 					lx, ly := matApply(inv, x, y)
 					pt := a.doc.Paths[pi].Points[a.selectedPathPt]
 					unlockHandles := e.Get("altKey").Bool()
+					mirrorStretch := e.Get("ctrlKey").Bool() && !unlockHandles && pointHandlesMirrored(pt)
 					switch a.selectedHandle {
 					case "anchor":
 						dpx := lx - pt.X
@@ -5269,12 +5668,16 @@ func (a *App) bindUI() {
 					case "in":
 						if unlockHandles {
 							pt = movePointHandleIndependent(pt, "in", lx, ly)
+						} else if mirrorStretch {
+							pt = movePointHandleMirrored(pt, "in", lx, ly)
 						} else {
 							pt = movePointHandleWeighted(pt, "in", lx, ly)
 						}
 					case "out":
 						if unlockHandles {
 							pt = movePointHandleIndependent(pt, "out", lx, ly)
+						} else if mirrorStretch {
+							pt = movePointHandleMirrored(pt, "out", lx, ly)
 						} else {
 							pt = movePointHandleWeighted(pt, "out", lx, ly)
 						}
@@ -5309,6 +5712,7 @@ func (a *App) bindUI() {
 		e := args[0]
 		x := e.Get("offsetX").Float()
 		y := e.Get("offsetY").Float()
+		prevDragMode := a.dragMode
 		a.dragMode = ""
 		if a.marqueeActive {
 			a.marqueeNowX = x
@@ -5351,6 +5755,21 @@ func (a *App) bindUI() {
 			a.penMouseDown = false
 			a.penDragIndex = -1
 		}
+		if prevDragMode == "subselect" && a.subselectNormalizeCandidate && !a.subselectDragMoved &&
+			a.selectedLayerIdx >= 0 && a.selectedInstIdx >= 0 && a.selectedPathPt >= 0 {
+			inst := a.currentLayers()[a.selectedLayerIdx].Instances[a.selectedInstIdx]
+			if inst.ElementType == "path" {
+				for pi := range a.doc.Paths {
+					if a.doc.Paths[pi].ID != inst.ElementID {
+						continue
+					}
+					a.doc.Paths[pi].Points[a.selectedPathPt] = smoothPathPointTangents(a.doc.Paths[pi], a.selectedPathPt)
+					break
+				}
+			}
+		}
+		a.subselectNormalizeCandidate = false
+		a.subselectDragMoved = false
 		a.lastMouseX = x
 		a.lastMouseY = y
 		return nil
