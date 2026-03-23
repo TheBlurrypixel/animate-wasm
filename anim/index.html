@@ -110,7 +110,7 @@
       <button id="btn-text-2" class="toolbtn" data-tool="text">Text</button>
       <button id="btn-shape" class="toolbtn" data-tool="shape">Shape</button>
       <button id="btn-classic-tween" class="toolbtn" data-tool="tween">Classic Tween</button>
-      <button id="btn-action-script" class="toolbtn" data-tool="action">Action Script</button>
+      <button id="btn-action-script" class="toolbtn" data-tool="action">Scripting</button>
       <div class="spacer"></div>
       <div id="status" class="status">Loading WASM&hellip;</div>
     </div>
@@ -160,6 +160,8 @@
         <div class="tabs">
           <div class="tab active" data-panel="properties">Properties</div>
           <div class="tab" data-panel="library">Library</div>
+          <div class="tab" data-panel="scripting">Scripting</div>
+          <div class="tab" data-panel="globalScripting">Global Scripting</div>
         </div>
         <div id="propertiesPanel" class="panelBody active">
           <div id="docPropertiesSection">
@@ -202,6 +204,24 @@
         <div id="libraryPanel" class="panelBody">
           <div class="groupTitle">Symbols</div>
           <div id="libraryList" class="libraryList"></div>
+        </div>
+        <div id="scriptingPanel" class="panelBody">
+          <div class="groupTitle">Scripting</div>
+          <div id="scriptInfo" class="scriptInfo">Root Timeline  Frame 1</div>
+          <textarea id="scriptEditor" class="scriptEditor" spellcheck="false" placeholder="// Code for this frame"></textarea>
+          <div class="scriptActions">
+            <button id="scriptSave" class="btn small" type="button">Save Script</button>
+            <button id="scriptClear" class="btn small" type="button">Clear Frame</button>
+          </div>
+        </div>
+        <div id="globalScriptingPanel" class="panelBody">
+          <div class="groupTitle">Global Scripting</div>
+          <div class="scriptInfo">Project-wide code. This script is the same on every frame.</div>
+          <textarea id="globalScriptEditor" class="scriptEditor" spellcheck="false" placeholder="// Global project code"></textarea>
+          <div class="scriptActions">
+            <button id="globalScriptSave" class="btn small" type="button">Save Global Script</button>
+            <button id="globalScriptClear" class="btn small" type="button">Clear Global Script</button>
+          </div>
         </div>
       </div>
     </div>

@@ -30,15 +30,16 @@ type ElementInstance struct {
 }
 
 type Symbol struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	SymbolType string            `json:"symbolType"`
-	AssetURL   string            `json:"assetURL,omitempty"`
-	BitmapData string            `json:"bitmapData,omitempty"`
-	BitmapW    float64           `json:"bitmapW,omitempty"`
-	BitmapH    float64           `json:"bitmapH,omitempty"`
-	Layers     []Layer           `json:"layers,omitempty"`
-	Instances  []ElementInstance `json:"instances"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	SymbolType   string            `json:"symbolType"`
+	AssetURL     string            `json:"assetURL,omitempty"`
+	BitmapData   string            `json:"bitmapData,omitempty"`
+	BitmapW      float64           `json:"bitmapW,omitempty"`
+	BitmapH      float64           `json:"bitmapH,omitempty"`
+	FrameScripts map[int]string    `json:"frameScripts,omitempty"`
+	Layers       []Layer           `json:"layers,omitempty"`
+	Instances    []ElementInstance `json:"instances"`
 }
 
 type InstanceKeyframe struct {
@@ -87,16 +88,18 @@ type VectorPath struct {
 }
 
 type Document struct {
-	Name        string         `json:"name"`
-	Width       int            `json:"width"`
-	Height      int            `json:"height"`
-	FPS         int            `json:"fps"`
-	Background  string         `json:"background"`
-	TotalFrames int            `json:"totalFrames"`
-	Layers      []Layer        `json:"layers"`
-	Symbols     []Symbol       `json:"symbols"`
-	Circles     []VectorCircle `json:"circles"`
-	Paths       []VectorPath   `json:"paths"`
+	Name         string         `json:"name"`
+	Width        int            `json:"width"`
+	Height       int            `json:"height"`
+	FPS          int            `json:"fps"`
+	Background   string         `json:"background"`
+	TotalFrames  int            `json:"totalFrames"`
+	GlobalScript string         `json:"globalScript,omitempty"`
+	FrameScripts map[int]string `json:"frameScripts,omitempty"`
+	Layers       []Layer        `json:"layers"`
+	Symbols      []Symbol       `json:"symbols"`
+	Circles      []VectorCircle `json:"circles"`
+	Paths        []VectorPath   `json:"paths"`
 }
 
 type appSnapshot struct {
@@ -114,12 +117,13 @@ type appSnapshot struct {
 
 func newDefaultDocument() Document {
 	doc := Document{
-		Name:        "scene-1",
-		Width:       640,
-		Height:      360,
-		FPS:         30,
-		Background:  "#808080",
-		TotalFrames: 120,
+		Name:         "scene-1",
+		Width:        640,
+		Height:       360,
+		FPS:          30,
+		Background:   "#808080",
+		TotalFrames:  120,
+		FrameScripts: map[int]string{},
 		Layers: []Layer{
 			{
 				Name:        "Layer 1",
@@ -336,6 +340,15 @@ type App struct {
 	libraryListEl          js.Value
 	propertiesPanelEl      js.Value
 	libraryPanelEl         js.Value
+	scriptingPanelEl       js.Value
+	globalScriptingPanelEl js.Value
+	scriptInfoEl           js.Value
+	scriptEditorEl         js.Value
+	scriptSaveBtn          js.Value
+	scriptClearBtn         js.Value
+	globalScriptEditorEl   js.Value
+	globalScriptSaveBtn    js.Value
+	globalScriptClearBtn   js.Value
 	propName               js.Value
 	propPosX               js.Value
 	propPosY               js.Value
@@ -465,6 +478,10 @@ type App struct {
 	historyBatchOpen        bool
 	suspendHistory          bool
 	clipboardInstances      []ElementInstance
+	scriptDirty             bool
+	lastScriptFrame         int
+	lastScriptTimelineKey   string
+	globalScriptDirty       bool
 
 	heldCallbacks []js.Func
 }
@@ -588,6 +605,10 @@ func (a *App) restoreSnapshot(s appSnapshot) {
 		a.selectedTweenEndFrame = s.SelectedTweenEndFrame
 	}
 	a.selectedLibrarySymbolID = s.SelectedLibrarySymbolID
+	a.scriptDirty = false
+	a.globalScriptDirty = false
+	a.lastScriptFrame = a.curFrame
+	a.lastScriptTimelineKey = a.currentTimelineKey()
 	a.closeDocumentDialog()
 	a.closeSettingsDialog()
 	a.refreshDocUI()
@@ -700,6 +721,15 @@ func (a *App) initDOM() {
 	a.libraryListEl = d.Call("getElementById", "libraryList")
 	a.propertiesPanelEl = d.Call("getElementById", "propertiesPanel")
 	a.libraryPanelEl = d.Call("getElementById", "libraryPanel")
+	a.scriptingPanelEl = d.Call("getElementById", "scriptingPanel")
+	a.globalScriptingPanelEl = d.Call("getElementById", "globalScriptingPanel")
+	a.scriptInfoEl = d.Call("getElementById", "scriptInfo")
+	a.scriptEditorEl = d.Call("getElementById", "scriptEditor")
+	a.scriptSaveBtn = d.Call("getElementById", "scriptSave")
+	a.scriptClearBtn = d.Call("getElementById", "scriptClear")
+	a.globalScriptEditorEl = d.Call("getElementById", "globalScriptEditor")
+	a.globalScriptSaveBtn = d.Call("getElementById", "globalScriptSave")
+	a.globalScriptClearBtn = d.Call("getElementById", "globalScriptClear")
 	a.propName = d.Call("getElementById", "propName")
 	a.propPosX = d.Call("getElementById", "propPosX")
 	a.propPosY = d.Call("getElementById", "propPosY")
@@ -868,6 +898,20 @@ func (a *App) setRightPanelTab(name string) {
 			a.libraryPanelEl.Get("classList").Call("add", "active")
 		} else {
 			a.libraryPanelEl.Get("classList").Call("remove", "active")
+		}
+	}
+	if a.scriptingPanelEl.Truthy() {
+		if name == "scripting" {
+			a.scriptingPanelEl.Get("classList").Call("add", "active")
+		} else {
+			a.scriptingPanelEl.Get("classList").Call("remove", "active")
+		}
+	}
+	if a.globalScriptingPanelEl.Truthy() {
+		if name == "globalScripting" {
+			a.globalScriptingPanelEl.Get("classList").Call("add", "active")
+		} else {
+			a.globalScriptingPanelEl.Get("classList").Call("remove", "active")
 		}
 	}
 }
@@ -2570,6 +2614,147 @@ func (a *App) currentLayers() []Layer {
 	return *a.currentLayersPtr()
 }
 
+func (a *App) currentTimelineScriptsPtr() *map[int]string {
+	if len(a.timelinePath) == 0 {
+		if a.doc.FrameScripts == nil {
+			a.doc.FrameScripts = make(map[int]string)
+		}
+		return &a.doc.FrameScripts
+	}
+	symbolID := a.timelinePath[len(a.timelinePath)-1]
+	for i := range a.doc.Symbols {
+		if a.doc.Symbols[i].ID == symbolID {
+			if a.doc.Symbols[i].FrameScripts == nil {
+				a.doc.Symbols[i].FrameScripts = make(map[int]string)
+			}
+			return &a.doc.Symbols[i].FrameScripts
+		}
+	}
+	if a.doc.FrameScripts == nil {
+		a.doc.FrameScripts = make(map[int]string)
+	}
+	return &a.doc.FrameScripts
+}
+
+func (a *App) currentTimelineKey() string {
+	if len(a.timelinePath) == 0 {
+		return "root"
+	}
+	return strings.Join(a.timelinePath, "/")
+}
+
+func (a *App) currentTimelineDisplayName() string {
+	if len(a.timelinePath) == 0 {
+		return "Root Timeline"
+	}
+	return a.symbolNameByID(a.timelinePath[len(a.timelinePath)-1])
+}
+
+func (a *App) currentScriptForFrame(frame int) string {
+	scripts := a.currentTimelineScriptsPtr()
+	if scripts == nil {
+		return ""
+	}
+	return (*scripts)[frame]
+}
+
+func (a *App) saveScriptForCurrentFrame() bool {
+	if !a.scriptEditorEl.Truthy() {
+		return false
+	}
+	code := a.scriptEditorEl.Get("value").String()
+	scripts := a.currentTimelineScriptsPtr()
+	if scripts == nil {
+		return false
+	}
+	current := (*scripts)[a.curFrame]
+	if code == current {
+		return false
+	}
+	a.captureUndoSnapshot()
+	if strings.TrimSpace(code) == "" {
+		delete(*scripts, a.curFrame)
+	} else {
+		(*scripts)[a.curFrame] = code
+	}
+	a.scriptDirty = false
+	a.lastScriptFrame = a.curFrame
+	a.lastScriptTimelineKey = a.currentTimelineKey()
+	return true
+}
+
+func (a *App) clearScriptForCurrentFrame() bool {
+	scripts := a.currentTimelineScriptsPtr()
+	if scripts == nil {
+		return false
+	}
+	if _, ok := (*scripts)[a.curFrame]; !ok && (!a.scriptEditorEl.Truthy() || strings.TrimSpace(a.scriptEditorEl.Get("value").String()) == "") {
+		return false
+	}
+	a.captureUndoSnapshot()
+	delete(*scripts, a.curFrame)
+	a.scriptDirty = false
+	a.lastScriptFrame = a.curFrame
+	a.lastScriptTimelineKey = a.currentTimelineKey()
+	if a.scriptEditorEl.Truthy() {
+		a.scriptEditorEl.Set("value", "")
+	}
+	return true
+}
+
+func (a *App) updateScriptingPanel() {
+	if !a.scriptEditorEl.Truthy() {
+		return
+	}
+	timelineName := a.currentTimelineDisplayName()
+	if a.scriptInfoEl.Truthy() {
+		a.scriptInfoEl.Set("textContent", fmt.Sprintf("%s  Frame %d", timelineName, a.curFrame))
+	}
+	curKey := a.currentTimelineKey()
+	curFrame := a.curFrame
+	shouldReload := curKey != a.lastScriptTimelineKey || curFrame != a.lastScriptFrame
+	if shouldReload {
+		a.scriptEditorEl.Set("value", a.currentScriptForFrame(curFrame))
+		a.scriptDirty = false
+		a.lastScriptTimelineKey = curKey
+		a.lastScriptFrame = curFrame
+	}
+}
+
+func (a *App) saveGlobalScript() bool {
+	if !a.globalScriptEditorEl.Truthy() {
+		return false
+	}
+	code := a.globalScriptEditorEl.Get("value").String()
+	if code == a.doc.GlobalScript {
+		return false
+	}
+	a.captureUndoSnapshot()
+	a.doc.GlobalScript = code
+	a.globalScriptDirty = false
+	return true
+}
+
+func (a *App) clearGlobalScript() bool {
+	if strings.TrimSpace(a.doc.GlobalScript) == "" && (!a.globalScriptEditorEl.Truthy() || strings.TrimSpace(a.globalScriptEditorEl.Get("value").String()) == "") {
+		return false
+	}
+	a.captureUndoSnapshot()
+	a.doc.GlobalScript = ""
+	a.globalScriptDirty = false
+	if a.globalScriptEditorEl.Truthy() {
+		a.globalScriptEditorEl.Set("value", "")
+	}
+	return true
+}
+
+func (a *App) updateGlobalScriptingPanel() {
+	if !a.globalScriptEditorEl.Truthy() || a.globalScriptDirty {
+		return
+	}
+	a.globalScriptEditorEl.Set("value", a.doc.GlobalScript)
+}
+
 func (a *App) currentTimelineBreadcrumb() string {
 	parts := []string{"Root"}
 	for _, symbolID := range a.timelinePath {
@@ -3548,45 +3733,59 @@ func (a *App) selectedAnchorWorld() (float64, float64, bool) {
 func movePointHandleWeighted(pt BezierPoint, handle string, x, y float64) BezierPoint {
 	switch handle {
 	case "in":
-		// Move incoming handle directly.
+		prevInAngle := math.Atan2(pt.InY-pt.Y, pt.InX-pt.X)
+		prevOutAngle := math.Atan2(pt.OutY-pt.Y, pt.OutX-pt.X)
+		angleDelta := prevOutAngle - prevInAngle
 		pt.InX = x
 		pt.InY = y
-		// Keep opposite tangent colinear for smooth weighted tangent behavior.
-		vx := pt.X - x
-		vy := pt.Y - y
-		vlen := math.Hypot(vx, vy)
 		ovx := pt.OutX - pt.X
 		ovy := pt.OutY - pt.Y
 		olen := math.Hypot(ovx, ovy)
+		nvx := pt.InX - pt.X
+		nvy := pt.InY - pt.Y
+		nlen := math.Hypot(nvx, nvy)
 		if olen < 1e-4 {
-			olen = vlen
+			olen = nlen
 		}
-		if vlen > 1e-4 {
-			nx := vx / vlen
-			ny := vy / vlen
-			pt.OutX = pt.X + nx*olen
-			pt.OutY = pt.Y + ny*olen
+		if nlen > 1e-4 {
+			newInAngle := math.Atan2(nvy, nvx)
+			newOutAngle := newInAngle + angleDelta
+			pt.OutX = pt.X + math.Cos(newOutAngle)*olen
+			pt.OutY = pt.Y + math.Sin(newOutAngle)*olen
 		}
 	case "out":
-		// Move outgoing handle directly.
+		prevInAngle := math.Atan2(pt.InY-pt.Y, pt.InX-pt.X)
+		prevOutAngle := math.Atan2(pt.OutY-pt.Y, pt.OutX-pt.X)
+		angleDelta := prevInAngle - prevOutAngle
 		pt.OutX = x
 		pt.OutY = y
-		// Keep opposite tangent colinear for smooth weighted tangent behavior.
-		vx := pt.X - x
-		vy := pt.Y - y
-		vlen := math.Hypot(vx, vy)
 		ivx := pt.InX - pt.X
 		ivy := pt.InY - pt.Y
 		ilen := math.Hypot(ivx, ivy)
+		nvx := pt.OutX - pt.X
+		nvy := pt.OutY - pt.Y
+		nlen := math.Hypot(nvx, nvy)
 		if ilen < 1e-4 {
-			ilen = vlen
+			ilen = nlen
 		}
-		if vlen > 1e-4 {
-			nx := vx / vlen
-			ny := vy / vlen
-			pt.InX = pt.X + nx*ilen
-			pt.InY = pt.Y + ny*ilen
+		if nlen > 1e-4 {
+			newOutAngle := math.Atan2(nvy, nvx)
+			newInAngle := newOutAngle + angleDelta
+			pt.InX = pt.X + math.Cos(newInAngle)*ilen
+			pt.InY = pt.Y + math.Sin(newInAngle)*ilen
 		}
+	}
+	return pt
+}
+
+func movePointHandleIndependent(pt BezierPoint, handle string, x, y float64) BezierPoint {
+	switch handle {
+	case "in":
+		pt.InX = x
+		pt.InY = y
+	case "out":
+		pt.OutX = x
+		pt.OutY = y
 	}
 	return pt
 }
@@ -4196,6 +4395,72 @@ func (a *App) bindUI() {
 	}
 	if a.propDocFps.Truthy() {
 		a.propDocFps.Call("addEventListener", "change", docFpsCb)
+	}
+	if a.scriptEditorEl.Truthy() {
+		scriptInputCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.scriptDirty = true
+			a.lastScriptTimelineKey = a.currentTimelineKey()
+			a.lastScriptFrame = a.curFrame
+			return nil
+		})
+		a.holdCallback(scriptInputCb)
+		a.scriptEditorEl.Call("addEventListener", "input", scriptInputCb)
+	}
+	if a.scriptSaveBtn.Truthy() {
+		scriptSaveCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if a.saveScriptForCurrentFrame() {
+				a.statusEl.Set("textContent", fmt.Sprintf("Script saved on frame %d", a.curFrame))
+			} else {
+				a.statusEl.Set("textContent", fmt.Sprintf("No script changes on frame %d", a.curFrame))
+			}
+			return nil
+		})
+		a.holdCallback(scriptSaveCb)
+		a.scriptSaveBtn.Call("addEventListener", "click", scriptSaveCb)
+	}
+	if a.scriptClearBtn.Truthy() {
+		scriptClearCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if a.clearScriptForCurrentFrame() {
+				a.statusEl.Set("textContent", fmt.Sprintf("Script cleared on frame %d", a.curFrame))
+			} else {
+				a.statusEl.Set("textContent", fmt.Sprintf("No script on frame %d", a.curFrame))
+			}
+			return nil
+		})
+		a.holdCallback(scriptClearCb)
+		a.scriptClearBtn.Call("addEventListener", "click", scriptClearCb)
+	}
+	if a.globalScriptEditorEl.Truthy() {
+		globalScriptInputCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			a.globalScriptDirty = true
+			return nil
+		})
+		a.holdCallback(globalScriptInputCb)
+		a.globalScriptEditorEl.Call("addEventListener", "input", globalScriptInputCb)
+	}
+	if a.globalScriptSaveBtn.Truthy() {
+		globalScriptSaveCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if a.saveGlobalScript() {
+				a.statusEl.Set("textContent", "Global script saved")
+			} else {
+				a.statusEl.Set("textContent", "No global script changes")
+			}
+			return nil
+		})
+		a.holdCallback(globalScriptSaveCb)
+		a.globalScriptSaveBtn.Call("addEventListener", "click", globalScriptSaveCb)
+	}
+	if a.globalScriptClearBtn.Truthy() {
+		globalScriptClearCb := js.FuncOf(func(this js.Value, args []js.Value) any {
+			if a.clearGlobalScript() {
+				a.statusEl.Set("textContent", "Global script cleared")
+			} else {
+				a.statusEl.Set("textContent", "No global script to clear")
+			}
+			return nil
+		})
+		a.holdCallback(globalScriptClearCb)
+		a.globalScriptClearBtn.Call("addEventListener", "click", globalScriptClearCb)
 	}
 	easeModeCb := js.FuncOf(func(this js.Value, args []js.Value) any {
 		a.applySelectedTweenEase(this.Get("value").String(), a.propEaseDir.Get("value").String())
@@ -4990,6 +5255,7 @@ func (a *App) bindUI() {
 					}
 					lx, ly := matApply(inv, x, y)
 					pt := a.doc.Paths[pi].Points[a.selectedPathPt]
+					unlockHandles := e.Get("altKey").Bool()
 					switch a.selectedHandle {
 					case "anchor":
 						dpx := lx - pt.X
@@ -5001,9 +5267,17 @@ func (a *App) bindUI() {
 						pt.OutX += dpx
 						pt.OutY += dpy
 					case "in":
-						pt = movePointHandleWeighted(pt, "in", lx, ly)
+						if unlockHandles {
+							pt = movePointHandleIndependent(pt, "in", lx, ly)
+						} else {
+							pt = movePointHandleWeighted(pt, "in", lx, ly)
+						}
 					case "out":
-						pt = movePointHandleWeighted(pt, "out", lx, ly)
+						if unlockHandles {
+							pt = movePointHandleIndependent(pt, "out", lx, ly)
+						} else {
+							pt = movePointHandleWeighted(pt, "out", lx, ly)
+						}
 					}
 					a.doc.Paths[pi].Points[a.selectedPathPt] = pt
 					break
@@ -5122,7 +5396,7 @@ func (a *App) setActiveTool(tool string) {
 		"pencil":    "Pencil",
 		"line":      "Line",
 		"tween":     "Classic Tween",
-		"action":    "Action Script",
+		"action":    "Scripting",
 	}[tool]
 	if tool == "shape" {
 		if a.shapeSubtool == "oval" {
@@ -5137,6 +5411,12 @@ func (a *App) setActiveTool(tool string) {
 		name = tool
 	}
 	a.selToolEl.Set("textContent", name)
+	if tool == "action" {
+		a.setRightPanelTab("scripting")
+		if a.scriptEditorEl.Truthy() {
+			a.scriptEditorEl.Call("focus")
+		}
+	}
 	if tool == "shape" || tool == "pencil" {
 		a.stageCanvas.Get("style").Set("cursor", "crosshair")
 	} else {
@@ -5177,6 +5457,8 @@ func (a *App) tick() {
 		a.isPlayEl.Set("textContent", "No")
 	}
 	a.updatePropertiesPanel()
+	a.updateScriptingPanel()
+	a.updateGlobalScriptingPanel()
 
 	if !a.playing {
 		a.playAccum = 0
@@ -5501,6 +5783,18 @@ func (a *App) renderTimeline() {
 
 	// layers rows
 	layers := a.currentLayers()
+	scripts := a.currentTimelineScriptsPtr()
+	for frame, code := range *scripts {
+		if strings.TrimSpace(code) == "" {
+			continue
+		}
+		x := a.frameToX(frame)
+		if x < a.headerW || x > w {
+			continue
+		}
+		ctx.Set("fillStyle", "#2f8cff")
+		ctx.Call("fillRect", x+2, topPad+4, math.Max(6, a.zoom-4), 6)
+	}
 	for i, layer := range layers {
 		y := topPad + float64(i)*a.layerH + 22
 		// row background

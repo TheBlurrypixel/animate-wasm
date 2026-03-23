@@ -390,6 +390,28 @@ html,body{ height:100%; margin:0; background:#151618; color:var(--text); font:14
 .panelBody.active{
   display:block;
 }
+.scriptInfo{
+  margin:10px 0 8px;
+  color:var(--muted);
+  font-size:12px;
+}
+.scriptEditor{
+  width:100%;
+  min-height:260px;
+  resize:vertical;
+  background:#16181b;
+  color:var(--text);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:10px 12px;
+  font:13px/1.45 Consolas, "Courier New", monospace;
+}
+.scriptActions{
+  display:flex;
+  gap:8px;
+  justify-content:flex-end;
+  margin-top:10px;
+}
 .groupTitle{ margin:10px 0 6px; color:var(--muted); font-size:12px; }
 .row{ display:flex; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
 .label{ width:90px; color:var(--muted); }
